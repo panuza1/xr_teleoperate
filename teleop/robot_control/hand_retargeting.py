@@ -10,7 +10,7 @@ if str(dex_retargeting_src) not in sys.path:
 
 from dex_retargeting import RetargetingConfig
 
-logger_mp = logging_mp.get_logger(__name__)
+logger_mp = logging_mp.getLogger(__name__)
 
 class HandType(Enum):
     INSPIRE_HAND = "../assets/inspire_hand/inspire_hand.yml"
