@@ -192,7 +192,7 @@
 | D405 相机腕圈 Dex3-1 支架 |  2   | 与（M4010腕部电机）腕部相机支架搭配使用 | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/left_wrist_D405_camera_mount.STEP) |
 |   （M4010腕部电机）左腕相机 Dex3-1 支架    |  1   |  用于装配左腕D405相机  | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/right_wrist_D405_camera_mount.STEP) |
 |   （M4010腕部电机）右腕相机 Dex3-1 支架    |  1   |  用于装配右腕D405相机  | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/wrist_ring_mount.STEP) |
-|   （M5010腕部电机）D405相机 Dex1-1 支架    |  1   |  用于装配 Dex1-1 的 D405 相机  | [📥 STEP](https://drive.google.com/file/d/1YmQHXSf-elHDRNwJMGQlAI7aqd9TGmN5/view?usp=sharing) |
+|   D405相机 Dex1-1 支架    |  1   |  用于装配 Dex1-1 的 D405 相机  | [📥 STEP](https://drive.google.com/file/d/1YmQHXSf-elHDRNwJMGQlAI7aqd9TGmN5/view?usp=sharing) |
 
 
 ### 5.2.4 G1 腕部单目相机

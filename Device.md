@@ -190,7 +190,7 @@
 | D405 Wrist Ring Dex3-1 Bracket |    2     | To be used with the wrist camera bracket (M4010 wrist motor) | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/left_wrist_D405_camera_mount.STEP) |
 | Left Wrist Camera Dex3-1 Bracket (M4010 wrist motor) |    1     | For mounting the left wrist D405 camera  | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/right_wrist_D405_camera_mount.STEP) |
 | Right Wrist Camera Dex3-1 Bracket (M4010 wrist motor) |    1     | For mounting the right wrist D405 camera | [📥 STEP](https://github.com/unitreerobotics/xr_teleoperate/blob/7cd188c1657ad4df97cfcd44e9f35bac937f7f2b/hardware/wrist_ring_mount.STEP) |
-| D405 Camera Dex1-1 Bracket (M5010 wrist motor) |    1     | For mounting the Dex1-1 D405 camera | [📥 STEP](https://drive.google.com/file/d/1YmQHXSf-elHDRNwJMGQlAI7aqd9TGmN5/view?usp=sharing) |
+| D405 Camera Dex1-1 Bracket |    1     | For mounting the Dex1-1 D405 camera | [📥 STEP](https://drive.google.com/file/d/1YmQHXSf-elHDRNwJMGQlAI7aqd9TGmN5/view?usp=sharing) |
 
 ### 5.2.4 G1 Wrist Monocular Camera
 
