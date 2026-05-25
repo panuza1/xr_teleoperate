@@ -132,6 +132,7 @@ if __name__ == '__main__':
                                      zmq=camera_config['head_camera']['enable_zmq'],
                                      webrtc=camera_config['head_camera']['enable_webrtc'],
                                      webrtc_url=f"https://{args.img_server_ip}:{camera_config['head_camera']['webrtc_port']}/offer",
+                                     arm_reference_mode="head_yaw"
                                      )
         
         # motion mode (G1: Regular mode R1+X, not Running mode R2+A)
