@@ -21,7 +21,7 @@ from teleop.robot_control.hand_retargeting import HandRetargeting, HandType
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 
 import logging_mp
-logger_mp = logging_mp.getLogger(__name__)
+logger_mp = logging_mp.get_logger(__name__)
 
 
 Dex3_Num_Motors = 7
@@ -69,26 +69,32 @@ class Dex3_1_Controller:
         self.RightHandCmb_publisher = ChannelPublisher(kTopicDex3RightCommand, HandCmd_)
         self.RightHandCmb_publisher.Init()
 
-        self.LeftHandState_subscriber = ChannelSubscriber(kTopicDex3LeftState, HandState_)
-        self.LeftHandState_subscriber.Init()
-        self.RightHandState_subscriber = ChannelSubscriber(kTopicDex3RightState, HandState_)
-        self.RightHandState_subscriber.Init()
+        self.LeftHandState_subscriber = None
+        self.RightHandState_subscriber = None
+        if not self.simulation_mode:
+            self.LeftHandState_subscriber = ChannelSubscriber(kTopicDex3LeftState, HandState_)
+            self.LeftHandState_subscriber.Init()
+            self.RightHandState_subscriber = ChannelSubscriber(kTopicDex3RightState, HandState_)
+            self.RightHandState_subscriber.Init()
 
         # Shared Arrays for hand states
         self.left_hand_state_array  = Array('d', Dex3_Num_Motors, lock=True)  
         self.right_hand_state_array = Array('d', Dex3_Num_Motors, lock=True)
 
-        # initialize subscribe thread
-        self.subscribe_state_thread = threading.Thread(target=self._subscribe_hand_state)
-        self.subscribe_state_thread.daemon = True
-        self.subscribe_state_thread.start()
+        if self.simulation_mode:
+            logger_mp.info("[Dex3_1_Controller] Simulation mode: command-only DDS, skip state wait.")
+        else:
+            # initialize subscribe thread
+            self.subscribe_state_thread = threading.Thread(target=self._subscribe_hand_state)
+            self.subscribe_state_thread.daemon = True
+            self.subscribe_state_thread.start()
 
-        while True:
-            if any(self.left_hand_state_array) and any(self.right_hand_state_array):
-                break
-            time.sleep(0.01)
-            logger_mp.warning("[Dex3_1_Controller] Waiting to subscribe dds...")
-        logger_mp.info("[Dex3_1_Controller] Subscribe dds ok.")
+            while True:
+                if any(self.left_hand_state_array) and any(self.right_hand_state_array):
+                    break
+                time.sleep(0.01)
+                logger_mp.warning("[Dex3_1_Controller] Waiting to subscribe dds...")
+            logger_mp.info("[Dex3_1_Controller] Subscribe dds ok.")
 
         hand_control_process = Process(target=self.control_process, args=(left_hand_array_in, right_hand_array_in,  self.left_hand_state_array, self.right_hand_state_array,
                                                                           dual_hand_data_lock, dual_hand_state_array_out, dual_hand_action_array_out, xr_motion_data_ready_in))
@@ -275,24 +281,31 @@ class Dex1_1_Gripper_Controller:
         self.RightGripperCmb_publisher = ChannelPublisher(kTopicGripperRightCommand, MotorCmds_)
         self.RightGripperCmb_publisher.Init()
 
-        self.LeftGripperState_subscriber = ChannelSubscriber(kTopicGripperLeftState, MotorStates_)
-        self.LeftGripperState_subscriber.Init()
-        self.RightGripperState_subscriber = ChannelSubscriber(kTopicGripperRightState, MotorStates_)
-        self.RightGripperState_subscriber.Init()
+        self.LeftGripperState_subscriber = None
+        self.RightGripperState_subscriber = None
+        if not self.simulation_mode:
+            self.LeftGripperState_subscriber = ChannelSubscriber(kTopicGripperLeftState, MotorStates_)
+            self.LeftGripperState_subscriber.Init()
+            self.RightGripperState_subscriber = ChannelSubscriber(kTopicGripperRightState, MotorStates_)
+            self.RightGripperState_subscriber.Init()
 
         # Shared Arrays for gripper states
         self.left_gripper_state_value = Value('d', 0.0, lock=True)
         self.right_gripper_state_value = Value('d', 0.0, lock=True)
 
-        # initialize subscribe thread
-        self.subscribe_state_thread = threading.Thread(target=self._subscribe_gripper_state)
-        self.subscribe_state_thread.daemon = True
-        self.subscribe_state_thread.start()
+        if self.simulation_mode:
+            self.gripper_sub_ready = True
+            logger_mp.info("[Dex1_1_Gripper_Controller] Simulation mode: command-only DDS, skip state wait.")
+        else:
+            # initialize subscribe thread
+            self.subscribe_state_thread = threading.Thread(target=self._subscribe_gripper_state)
+            self.subscribe_state_thread.daemon = True
+            self.subscribe_state_thread.start()
 
-        while not self.gripper_sub_ready:
-            time.sleep(0.01)
-            logger_mp.warning("[Dex1_1_Gripper_Controller] Waiting to subscribe dds...")
-        logger_mp.info("[Dex1_1_Gripper_Controller] Subscribe dds ok.")
+            while not self.gripper_sub_ready:
+                time.sleep(0.01)
+                logger_mp.warning("[Dex1_1_Gripper_Controller] Waiting to subscribe dds...")
+            logger_mp.info("[Dex1_1_Gripper_Controller] Subscribe dds ok.")
 
         self.gripper_control_thread = threading.Thread(target=self.control_thread, args=(left_gripper_value_in, right_gripper_value_in, self.left_gripper_state_value, self.right_gripper_state_value,
                                                                                          dual_gripper_data_lock, dual_gripper_state_out, dual_gripper_action_out, xr_motion_data_ready_in))

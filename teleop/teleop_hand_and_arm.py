@@ -3,8 +3,8 @@ import argparse
 from multiprocessing import Value, Array, Lock
 import threading
 import logging_mp
-logging_mp.basicConfig(level=logging_mp.INFO)
-logger_mp = logging_mp.getLogger(__name__)
+logging_mp.basic_config(level=logging_mp.INFO)
+logger_mp = logging_mp.get_logger(__name__)
 
 import os 
 import sys
@@ -142,9 +142,12 @@ if __name__ == '__main__':
             if args.input_mode == "controller":
                 loco_wrapper = LocoClientWrapper()
         else:
-            motion_switcher = MotionSwitcher()
-            status, result = motion_switcher.Enter_Debug_Mode()
-            logger_mp.info(f"Enter debug mode: {'Success' if status == 0 else 'Failed'}")
+            if args.sim:
+                logger_mp.info("Simulation mode: skip physical robot debug-mode switch.")
+            else:
+                motion_switcher = MotionSwitcher()
+                status, result = motion_switcher.Enter_Debug_Mode()
+                logger_mp.info(f"Enter debug mode: {'Success' if status == 0 else 'Failed'}")
 
         # arm
         if args.arm == "G1_29":

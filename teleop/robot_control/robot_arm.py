@@ -12,7 +12,7 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import ( LowCmd_  as go_LowCmd, LowS
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 
 import logging_mp
-logger_mp = logging_mp.getLogger(__name__)
+logger_mp = logging_mp.get_logger(__name__)
 
 kTopicLowCommand_Debug  = "rt/lowcmd"
 kTopicLowCommand_Motion = "rt/arm_sdk"
@@ -49,6 +49,14 @@ class H1_LowState:
 class H2_LowState:
     def __init__(self):
         self.motor_state = [MotorState() for _ in range(H2_Num_Motors)]
+
+
+def _zero_lowstate(state_cls):
+    state = state_cls()
+    for motor in state.motor_state:
+        motor.q = 0.0
+        motor.dq = 0.0
+    return state
 
 
 class DataBuffer:
@@ -91,25 +99,31 @@ class G1_29_ArmController:
         else:
             self.lowcmd_publisher = ChannelPublisher(kTopicLowCommand_Debug, hg_LowCmd)
         self.lowcmd_publisher.Init()
-        self.lowstate_subscriber = ChannelSubscriber(kTopicLowState, hg_LowState)
-        self.lowstate_subscriber.Init()
         self.lowstate_buffer = DataBuffer()
+        self.lowstate_subscriber = None
 
-        # initialize subscribe thread
-        self.subscribe_thread = threading.Thread(target=self._subscribe_motor_state)
-        self.subscribe_thread.daemon = True
-        self.subscribe_thread.start()
+        if self.simulation_mode:
+            self.lowstate_buffer.SetData(_zero_lowstate(G1_29_LowState))
+            logger_mp.info("[G1_29_ArmController] Simulation mode: command-only DDS, skip lowstate wait.")
+        else:
+            self.lowstate_subscriber = ChannelSubscriber(kTopicLowState, hg_LowState)
+            self.lowstate_subscriber.Init()
 
-        while not self.lowstate_buffer.GetData():
-            time.sleep(0.1)
-            logger_mp.warning("[G1_29_ArmController] Waiting to subscribe dds...")
-        logger_mp.info("[G1_29_ArmController] Subscribe dds ok.")
+            # initialize subscribe thread
+            self.subscribe_thread = threading.Thread(target=self._subscribe_motor_state)
+            self.subscribe_thread.daemon = True
+            self.subscribe_thread.start()
+
+            while not self.lowstate_buffer.GetData():
+                time.sleep(0.1)
+                logger_mp.warning("[G1_29_ArmController] Waiting to subscribe dds...")
+            logger_mp.info("[G1_29_ArmController] Subscribe dds ok.")
 
         # initialize hg's lowcmd msg
         self.crc = CRC()
         self.msg = unitree_hg_msg_dds__LowCmd_()
         self.msg.mode_pr = 0
-        self.msg.mode_machine = self.get_mode_machine()
+        self.msg.mode_machine = 0 if self.simulation_mode else self.get_mode_machine()
 
         self.all_motor_q = self.get_current_motor_q()
         logger_mp.debug(f"Current all body motor state q:\n{self.all_motor_q} \n")
@@ -205,6 +219,8 @@ class G1_29_ArmController:
 
     def get_mode_machine(self):
         '''Return current dds mode machine.'''
+        if self.lowstate_subscriber is None:
+            return 0
         return self.lowstate_subscriber.Read().mode_machine
     
     def get_current_motor_q(self):
