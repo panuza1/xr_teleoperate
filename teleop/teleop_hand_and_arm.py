@@ -25,6 +25,7 @@ from sshkeyboard import listen_keyboard, stop_listening
 # for simulation
 from unitree_sdk2py.core.channel import ChannelPublisher
 from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+
 def publish_reset_category(category: int, publisher): # Scene Reset signal
     msg = String_(data=str(category))
     publisher.Write(msg)
