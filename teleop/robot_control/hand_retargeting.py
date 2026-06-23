@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 from enum import Enum
 import logging_mp
-logger_mp = logging_mp.getLogger(__name__)
+logger_mp = logging_mp.get_logger(__name__)
 
 class HandType(Enum):
     INSPIRE_HAND = "../assets/inspire_hand/inspire_hand.yml"

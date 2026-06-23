@@ -15,9 +15,12 @@ import sys
 import threading
 from multiprocessing import Process, Array, Value, Lock
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
 parent2_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(parent2_dir)
-from teleop.robot_control.hand_retargeting import HandRetargeting, HandType
+dex_retargeting_src = os.path.join(current_dir, "dex-retargeting", "src")
+if dex_retargeting_src not in sys.path:
+    sys.path.append(dex_retargeting_src)
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 
 import logging_mp
@@ -58,6 +61,7 @@ class Dex3_1_Controller:
         self.fps = fps
         self.Unit_Test = Unit_Test
         self.simulation_mode = simulation_mode
+        from teleop.robot_control.hand_retargeting import HandRetargeting, HandType
         if not self.Unit_Test:
             self.hand_retargeting = HandRetargeting(HandType.UNITREE_DEX3)
         else:
@@ -233,6 +237,100 @@ class Dex3_1_Right_JointIndex(IntEnum):
     kRightHandIndex1 = 4
     kRightHandMiddle0 = 5
     kRightHandMiddle1 = 6
+
+
+class Dex3_Controller_Button_Controller:
+    def __init__(self, left_trigger_in, right_trigger_in, dual_hand_data_lock=None,
+                 dual_hand_state_array_out=None, dual_hand_action_array_out=None,
+                 fps=100.0, simulation_mode=False, xr_motion_data_ready_in=None):
+        logger_mp.info("Initialize Dex3_Controller_Button_Controller...")
+        self.fps = fps
+        self.left_trigger_in = left_trigger_in
+        self.right_trigger_in = right_trigger_in
+        self.dual_hand_data_lock = dual_hand_data_lock
+        self.dual_hand_state_array_out = dual_hand_state_array_out
+        self.dual_hand_action_array_out = dual_hand_action_array_out
+        self.xr_motion_data_ready_in = xr_motion_data_ready_in
+        self.running = True
+
+        self.LeftHandCmb_publisher = ChannelPublisher(kTopicDex3LeftCommand, HandCmd_)
+        self.LeftHandCmb_publisher.Init()
+        self.RightHandCmb_publisher = ChannelPublisher(kTopicDex3RightCommand, HandCmd_)
+        self.RightHandCmb_publisher.Init()
+
+        self.left_msg = unitree_hg_msg_dds__HandCmd_()
+        self.right_msg = unitree_hg_msg_dds__HandCmd_()
+        self._init_msg(self.left_msg, Dex3_1_Left_JointIndex)
+        self._init_msg(self.right_msg, Dex3_1_Right_JointIndex)
+
+        self.control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self.control_thread.start()
+        logger_mp.info("Initialize Dex3_Controller_Button_Controller OK!")
+
+    class _RIS_Mode:
+        def __init__(self, id=0, status=0x01, timeout=0):
+            self.motor_mode = 0
+            self.id = id & 0x0F
+            self.status = status & 0x07
+            self.timeout = timeout & 0x01
+
+        def _mode_to_uint8(self):
+            self.motor_mode |= (self.id & 0x0F)
+            self.motor_mode |= (self.status & 0x07) << 4
+            self.motor_mode |= (self.timeout & 0x01) << 7
+            return self.motor_mode
+
+    def _init_msg(self, msg, joint_index_cls):
+        for id in joint_index_cls:
+            ris_mode = self._RIS_Mode(id=id, status=0x01)
+            msg.motor_cmd[id].mode = ris_mode._mode_to_uint8()
+            msg.motor_cmd[id].q = 0.0
+            msg.motor_cmd[id].dq = 0.0
+            msg.motor_cmd[id].tau = 0.0
+            msg.motor_cmd[id].kp = 1.5
+            msg.motor_cmd[id].kd = 0.2
+
+    def _trigger_to_dex3_q(self, trigger_value):
+        close = float(np.clip(trigger_value, 0.0, 1.0))
+        # Simple grasp preset: thumb/index/middle close together.
+        return np.array([0.35, 0.75, 0.75, 0.90, 0.90, 0.90, 0.90], dtype=np.float64) * close
+
+    def _write_msg(self, msg, joint_index_cls, q_target):
+        for idx, id in enumerate(joint_index_cls):
+            msg.motor_cmd[id].q = float(q_target[idx])
+
+    def _control_loop(self):
+        left_q = np.zeros(Dex3_Num_Motors, dtype=np.float64)
+        right_q = np.zeros(Dex3_Num_Motors, dtype=np.float64)
+        try:
+            while self.running:
+                start_time = time.time()
+                if self.xr_motion_data_ready_in is not None:
+                    with self.xr_motion_data_ready_in.get_lock():
+                        motion_ready = self.xr_motion_data_ready_in.value
+                else:
+                    motion_ready = True
+
+                if motion_ready:
+                    with self.left_trigger_in.get_lock():
+                        left_q = self._trigger_to_dex3_q(self.left_trigger_in.value)
+                    with self.right_trigger_in.get_lock():
+                        right_q = self._trigger_to_dex3_q(self.right_trigger_in.value)
+
+                self._write_msg(self.left_msg, Dex3_1_Left_JointIndex, left_q)
+                self._write_msg(self.right_msg, Dex3_1_Right_JointIndex, right_q)
+                self.LeftHandCmb_publisher.Write(self.left_msg)
+                self.RightHandCmb_publisher.Write(self.right_msg)
+
+                if self.dual_hand_state_array_out is not None and self.dual_hand_action_array_out is not None:
+                    with self.dual_hand_data_lock:
+                        self.dual_hand_state_array_out[:] = np.concatenate((left_q, right_q))
+                        self.dual_hand_action_array_out[:] = np.concatenate((left_q, right_q))
+
+                sleep_time = max(0.0, (1.0 / self.fps) - (time.time() - start_time))
+                time.sleep(sleep_time)
+        finally:
+            logger_mp.info("Dex3_Controller_Button_Controller has been closed.")
 
 
 kTopicGripperLeftCommand = "rt/dex1/left/cmd"

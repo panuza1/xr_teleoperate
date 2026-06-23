@@ -168,8 +168,24 @@ if __name__ == '__main__':
 
         # end-effector
         xr_motion_data_ready = Value('b', False, lock=True)        # [input] whether XR hand/controller motion data has arrived
-        if args.ee in ("dex3", "inspire_ftp", "inspire_dfx") and args.input_mode == "controller":
+        if args.ee in ("inspire_ftp", "inspire_dfx") and args.input_mode == "controller":
             raise ValueError(f"{args.ee} does not support controller input mode.")
+        elif args.ee == "dex3" and args.input_mode == "controller":
+            from teleop.robot_control.robot_hand_unitree import Dex3_Controller_Button_Controller
+            left_dex3_trigger_value = Value('d', 0.0, lock=True)
+            right_dex3_trigger_value = Value('d', 0.0, lock=True)
+            dual_hand_data_lock = Lock()
+            dual_hand_state_array = Array('d', 14, lock=False)
+            dual_hand_action_array = Array('d', 14, lock=False)
+            hand_ctrl = Dex3_Controller_Button_Controller(
+                left_dex3_trigger_value,
+                right_dex3_trigger_value,
+                dual_hand_data_lock,
+                dual_hand_state_array,
+                dual_hand_action_array,
+                simulation_mode=args.sim,
+                xr_motion_data_ready_in=xr_motion_data_ready,
+            )
         elif args.ee == "dex3":
             from teleop.robot_control.robot_hand_unitree import Dex3_1_Controller
             left_hand_pos_array = Array('d', 75, lock = True)      # [input]
@@ -331,6 +347,11 @@ if __name__ == '__main__':
                     right_gripper_trigger_in.value = tele_data.right_ctrl_triggerValue
                 with right_gripper_squeeze_in.get_lock():
                     right_gripper_squeeze_in.value = tele_data.right_ctrl_squeezeValue
+            elif args.ee == "dex3" and args.input_mode == "controller":
+                with left_dex3_trigger_value.get_lock():
+                    left_dex3_trigger_value.value = tele_data.left_ctrl_triggerValue
+                with right_dex3_trigger_value.get_lock():
+                    right_dex3_trigger_value.value = tele_data.right_ctrl_triggerValue
             elif args.ee == "dex1" and args.input_mode == "controller":
                 with left_gripper_value.get_lock():
                     left_gripper_value.value = tele_data.left_ctrl_triggerValue
