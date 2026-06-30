@@ -88,6 +88,12 @@ if __name__ == '__main__':
     parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')
     parser.add_argument('--headless', action='store_true', help='Enable headless mode (no display)')
     parser.add_argument('--sim', action = 'store_true', help = 'Enable isaac simulation mode')
+    parser.add_argument(
+        '--body-tracking',
+        choices=['off', 'upper'],
+        default='off',
+        help='Experimental Quest torso tracking for G1 waist control. Simulation-only.',
+    )
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')
     parser.add_argument('--affinity', action = 'store_true', help = 'Enable high priority and set CPU affinity mode')
     # record mode and task info
@@ -99,6 +105,15 @@ if __name__ == '__main__':
     parser.add_argument('--task-steps', type = str, default = 'step1: do this; step2: do that;', help = 'task steps for recording at json file')
 
     args = parser.parse_args()
+    if args.body_tracking == 'upper':
+        if not args.sim:
+            parser.error('--body-tracking upper is restricted to --sim')
+        if args.input_mode != 'hand':
+            parser.error('--body-tracking upper requires --input-mode hand')
+        if args.arm != 'G1_29':
+            parser.error('--body-tracking upper currently supports --arm G1_29 only')
+        if args.motion:
+            parser.error('--body-tracking upper cannot be combined with --motion')
     logger_mp.debug(f"args: {args}")
 
     try:
@@ -140,7 +155,8 @@ if __name__ == '__main__':
         )
 
         # televuer_wrapper: obtain hand pose data from the XR device and transmit the robot's head camera image to the XR device.
-        tv_wrapper = TeleVuerWrapper(use_hand_tracking=args.input_mode == "hand", 
+        tv_wrapper = TeleVuerWrapper(use_hand_tracking=args.input_mode == "hand",
+                                     use_body_tracking=args.body_tracking == "upper",
                                      binocular=camera_config['head_camera']['binocular'],
                                      img_shape=camera_config['head_camera']['image_shape'],
                                      # maybe should decrease fps for better performance?
@@ -168,7 +184,11 @@ if __name__ == '__main__':
         # arm
         if args.arm == "G1_29":
             arm_ik = G1_29_ArmIK()
-            arm_ctrl = G1_29_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
+            arm_ctrl = G1_29_ArmController(
+                motion_mode=args.motion,
+                simulation_mode=args.sim,
+                upper_body_tracking=args.body_tracking == "upper",
+            )
         elif args.arm == "G1_23":
             arm_ik = G1_23_ArmIK()
             arm_ctrl = G1_23_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
@@ -181,6 +201,18 @@ if __name__ == '__main__':
         elif args.arm == "H2":
             arm_ik = H2_ArmIK()
             arm_ctrl = H2_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
+
+        body_retargeter = None
+        last_body_tracking_warning = 0.0
+        if args.body_tracking == "upper":
+            from teleop.robot_control.body_retargeting import QuestUpperBodyRetargeter
+            body_retargeter = QuestUpperBodyRetargeter()
+            logger_mp.info(
+                "Quest upper-body tracking enabled. Stand upright when pressing [r] to calibrate."
+            )
+            logger_mp.info(
+                "Quest Browser must enable WebXR experiments/body tracking and grant body access."
+            )
 
         # end-effector
         xr_motion_data_ready = Value('b', False, lock=True)        # [input] whether XR hand/controller motion data has arrived
@@ -382,6 +414,23 @@ if __name__ == '__main__':
                 pass
             with xr_motion_data_ready.get_lock():
                 xr_motion_data_ready.value = tele_data.motion_data_ready
+
+            if body_retargeter is not None and tele_data.body_tracking_ready:
+                try:
+                    was_calibrated = body_retargeter.calibrated
+                    waist_q_target = body_retargeter.retarget(tele_data.body_poses)
+                    arm_ctrl.ctrl_waist(waist_q_target)
+                    if not was_calibrated:
+                        logger_mp.info("Quest body tracking calibrated.")
+                except ValueError as exc:
+                    if time.time() - last_body_tracking_warning >= 2.0:
+                        logger_mp.warning(f"Quest body frame rejected: {exc}")
+                        last_body_tracking_warning = time.time()
+            elif body_retargeter is not None and time.time() - last_body_tracking_warning >= 5.0:
+                logger_mp.warning(
+                    "Waiting for Quest BODY_MOVE data. Check the WebXR body-tracking flag and permission."
+                )
+                last_body_tracking_warning = time.time()
             
             # high level control
             if args.input_mode == "controller" and args.motion:

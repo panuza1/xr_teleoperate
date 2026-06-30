@@ -73,12 +73,14 @@ class DataBuffer:
             self.data = data
 
 class G1_29_ArmController:
-    def __init__(self, motion_mode = False, simulation_mode = False):
+    def __init__(self, motion_mode=False, simulation_mode=False, upper_body_tracking=False):
         logger_mp.info("Initialize G1_29_ArmController...")
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
         self.motion_mode = motion_mode
         self.simulation_mode = simulation_mode
+        self.upper_body_tracking = upper_body_tracking
+        self.waist_q_target = np.zeros(3)
         self.kp_high = 300.0
         self.kd_high = 3.0
         self.kp_low = 80.0
@@ -186,6 +188,7 @@ class G1_29_ArmController:
             with self.ctrl_lock:
                 arm_q_target     = self.q_target
                 arm_tauff_target = self.tauff_target
+                waist_q_target = self.waist_q_target.copy()
 
             if self.simulation_mode:
                 cliped_arm_q_target = arm_q_target
@@ -196,6 +199,11 @@ class G1_29_ArmController:
                 self.msg.motor_cmd[id].q = cliped_arm_q_target[idx]
                 self.msg.motor_cmd[id].dq = 0
                 self.msg.motor_cmd[id].tau = arm_tauff_target[idx]   
+            if self.upper_body_tracking:
+                for idx, motor_idx in enumerate(range(12, 15)):
+                    self.msg.motor_cmd[motor_idx].q = waist_q_target[idx]
+                    self.msg.motor_cmd[motor_idx].dq = 0.0
+                    self.msg.motor_cmd[motor_idx].tau = 0.0
 
             self.msg.crc = self.crc.Crc(self.msg)
             self.lowcmd_publisher.Write(self.msg)
@@ -216,6 +224,14 @@ class G1_29_ArmController:
         with self.ctrl_lock:
             self.q_target = q_target
             self.tauff_target = tauff_target
+
+    def ctrl_waist(self, q_target):
+        """Set G1 waist targets (yaw, roll, pitch)."""
+        target = np.asarray(q_target, dtype=np.float64)
+        if target.shape != (3,):
+            raise ValueError(f"waist target must have shape (3,), got {target.shape}")
+        with self.ctrl_lock:
+            self.waist_q_target = target.copy()
 
     def get_mode_machine(self):
         '''Return current dds mode machine.'''
