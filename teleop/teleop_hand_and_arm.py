@@ -81,6 +81,8 @@ if __name__ == '__main__':
     parser.add_argument('--ee', type=str, choices=['dex1', 'dex3', 'inspire_ftp', 'inspire_dfx', 'brainco'], help='Select end effector controller')
     # network parameters
     parser.add_argument('--img-server-ip', type=str, default='192.168.123.164', help='IP address of image server, used by teleimager and televuer')
+    parser.add_argument('--image-transport', choices=['auto', 'webrtc', 'zmq'], default='auto',
+                        help='Image transport to XR. Use zmq to bypass browser WebRTC attachment issues.')
     parser.add_argument('--network-interface', type=str, default=None, help='Network interface for dds communication, e.g., eth0, wlan0. If None, use default interface.')
     # mode flags
     parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')
@@ -121,7 +123,21 @@ if __name__ == '__main__':
         img_client = ImageClient(host=args.img_server_ip, request_bgr=True)
         camera_config = img_client.get_cam_config()
         logger_mp.debug(f"Camera config: {camera_config}")
-        xr_need_local_img = not (args.display_mode == 'pass-through' or camera_config['head_camera']['enable_webrtc'])
+        head_camera_config = camera_config['head_camera']
+        use_webrtc = head_camera_config['enable_webrtc']
+        use_zmq = head_camera_config['enable_zmq']
+        if args.image_transport == 'webrtc':
+            if not use_webrtc:
+                raise ValueError("WebRTC is disabled in the image server camera config.")
+            use_zmq = False
+        elif args.image_transport == 'zmq':
+            if not use_zmq:
+                raise ValueError("ZMQ is disabled in the image server camera config.")
+            use_webrtc = False
+        xr_need_local_img = not (args.display_mode == 'pass-through' or use_webrtc)
+        logger_mp.info(
+            f"XR image transport: {'none' if args.display_mode == 'pass-through' else 'webrtc' if use_webrtc else 'zmq'}"
+        )
 
         # televuer_wrapper: obtain hand pose data from the XR device and transmit the robot's head camera image to the XR device.
         tv_wrapper = TeleVuerWrapper(use_hand_tracking=args.input_mode == "hand", 
@@ -131,9 +147,9 @@ if __name__ == '__main__':
                                      # https://github.com/unitreerobotics/xr_teleoperate/issues/172
                                      # display_fps=camera_config['head_camera']['fps'] ? args.frequency? 30.0?
                                      display_mode=args.display_mode,
-                                     zmq=camera_config['head_camera']['enable_zmq'],
-                                     webrtc=camera_config['head_camera']['enable_webrtc'],
-                                     webrtc_url=f"https://{args.img_server_ip}:{camera_config['head_camera']['webrtc_port']}/offer",
+                                     zmq=use_zmq,
+                                     webrtc=use_webrtc,
+                                     webrtc_url=f"https://{args.img_server_ip}:{head_camera_config['webrtc_port']}/offer",
                                      arm_reference_mode="head_yaw"
                                      )
         

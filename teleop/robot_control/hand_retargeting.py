@@ -1,8 +1,15 @@
-from dex_retargeting import RetargetingConfig
 from pathlib import Path
+import sys
 import yaml
 from enum import Enum
 import logging_mp
+
+dex_retargeting_src = Path(__file__).resolve().parent / "dex-retargeting" / "src"
+if str(dex_retargeting_src) not in sys.path:
+    sys.path.append(str(dex_retargeting_src))
+
+from dex_retargeting import RetargetingConfig
+
 logger_mp = logging_mp.get_logger(__name__)
 
 class HandType(Enum):
