@@ -71,6 +71,34 @@ def get_state() -> dict:
         "RECORD_RUNNING": RECORD_RUNNING,
     }
 
+DUAL_ARM_JOINT_NAMES = (
+    "left_shoulder_pitch",
+    "left_shoulder_roll",
+    "left_shoulder_yaw",
+    "left_elbow",
+    "left_wrist_roll",
+    "left_wrist_pitch",
+    "left_wrist_yaw",
+    "right_shoulder_pitch",
+    "right_shoulder_roll",
+    "right_shoulder_yaw",
+    "right_elbow",
+    "right_wrist_roll",
+    "right_wrist_pitch",
+    "right_wrist_yaw",
+)
+
+WAIST_JOINT_NAMES = (
+    "waist_yaw",
+    "waist_roll",
+    "waist_pitch",
+)
+
+def format_joint_positions(names, values):
+    return ", ".join(
+        f"{name}={float(value):+.4f}" for name, value in zip(names, values)
+    )
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # basic control parameters
@@ -94,6 +122,10 @@ if __name__ == '__main__':
         default='off',
         help='Experimental Quest torso tracking for G1 waist control. Simulation-only.',
     )
+    parser.add_argument('--print-joints', action='store_true',
+                        help='Print target joint positions sent to DDS.')
+    parser.add_argument('--print-joints-interval', type=float, default=1.0,
+                        help='Seconds between --print-joints logs.')
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')
     parser.add_argument('--affinity', action = 'store_true', help = 'Enable high priority and set CPU affinity mode')
     # record mode and task info
@@ -348,6 +380,8 @@ if __name__ == '__main__':
         head_img = None
         left_wrist_img = None
         right_wrist_img = None
+        last_joint_print_time = 0.0
+        last_waist_q_target = None
 
         # main loop. robot start to follow VR user's motion
         while not STOP:
@@ -420,6 +454,7 @@ if __name__ == '__main__':
                     was_calibrated = body_retargeter.calibrated
                     waist_q_target = body_retargeter.retarget(tele_data.body_poses)
                     arm_ctrl.ctrl_waist(waist_q_target)
+                    last_waist_q_target = waist_q_target
                     if not was_calibrated:
                         logger_mp.info("Quest body tracking calibrated.")
                 except ValueError as exc:
@@ -456,6 +491,17 @@ if __name__ == '__main__':
             time_ik_end = time.time()
             logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
             arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)
+            if args.print_joints and start_time - last_joint_print_time >= args.print_joints_interval:
+                logger_mp.info(
+                    "[joint_debug] arm target q(rad): "
+                    + format_joint_positions(DUAL_ARM_JOINT_NAMES, sol_q)
+                )
+                if last_waist_q_target is not None:
+                    logger_mp.info(
+                        "[joint_debug] waist target q(rad): "
+                        + format_joint_positions(WAIST_JOINT_NAMES, last_waist_q_target)
+                    )
+                last_joint_print_time = start_time
 
             # record data
             if args.record:
