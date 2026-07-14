@@ -9,7 +9,9 @@
   </p>
 </div>
 
-> New here? Read up to "Application Development" in the [Unitree official docs](https://support.unitree.com/main/en) first, then come back.
+> New here? Read up to "Application Development" in the [Unitree official docs](https://support.unitree.com/main/en) first, then come back.     
+
+> 📄 This is a reorganized/quick-reference version of the original README. Full original: [README_old.md](README_old.md)
 
 ---
 
