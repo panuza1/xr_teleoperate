@@ -1,5 +1,6 @@
 import time
 import argparse
+import numpy as np
 from multiprocessing import Value, Array, Lock
 import threading
 import logging_mp
@@ -125,6 +126,11 @@ if __name__ == '__main__':
         default='off',
         help='Experimental Quest torso tracking for G1 waist control. Simulation-only.',
     )
+    parser.add_argument('--tracking-timeout', type=float, default=0.5,
+                        help='Seconds without XR pose updates before tracking is considered lost.')
+    parser.add_argument('--tracking-fallback', choices=['hold', 'home'], default='hold',
+                        help='Safety behavior on XR tracking loss: hold the last arm pose, '
+                             'or slowly ramp the arms back to the home (default) pose.')
     parser.add_argument('--print-joints', action='store_true',
                         help='Print target joint positions sent to DDS.')
     parser.add_argument('--print-joints-interval', type=float, default=1.0,
@@ -386,6 +392,13 @@ if __name__ == '__main__':
         last_joint_print_time = 0.0
         last_waist_q_target = None
 
+        # XR tracking-loss safety state
+        tracking_lost = False
+        last_raw_pose = None
+        last_pose_change_time = time.time()
+        last_sol_q = None
+        HOME_RAMP_RAD_S = 0.5  # max joint speed (rad/s) when ramping back to home pose
+
         # main loop. robot start to follow VR user's motion
         while not STOP:
             start_time = time.time()
@@ -418,7 +431,28 @@ if __name__ == '__main__':
 
             # get xr's tele data
             tele_data = tv_wrapper.get_tele_data()
-            if args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco")  and args.input_mode == "hand":
+
+            # --- XR tracking-loss detection (safety) ---
+            # Raw XR poses freeze when the headset stops sending events (e.g. taken
+            # off) and become singular when tracking data is invalid. Either case
+            # means the incoming poses must not be used to drive the robot.
+            raw_left_pose = np.asarray(tv_wrapper.tvuer.left_arm_pose, dtype=np.float64)
+            raw_right_pose = np.asarray(tv_wrapper.tvuer.right_arm_pose, dtype=np.float64)
+            poses_valid = bool(np.isfinite(raw_left_pose).all() and np.isfinite(raw_right_pose).all())
+            if poses_valid:
+                poses_valid = not (
+                    np.isclose(np.linalg.det(raw_left_pose), 0.0, atol=1e-6)
+                    or np.isclose(np.linalg.det(raw_right_pose), 0.0, atol=1e-6)
+                )
+            raw_pose_concat = np.concatenate([raw_left_pose.ravel(), raw_right_pose.ravel()])
+            if last_raw_pose is None or not np.array_equal(raw_pose_concat, last_raw_pose):
+                last_raw_pose = raw_pose_concat
+                last_pose_change_time = start_time
+            tracking_ok = poses_valid and (start_time - last_pose_change_time) <= args.tracking_timeout
+
+            if not tracking_ok:
+                pass  # keep last hand/gripper targets; do not feed stale or invalid XR data
+            elif args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco")  and args.input_mode == "hand":
                 with left_hand_pos_array.get_lock():
                     left_hand_pos_array[:] = tele_data.left_hand_pos.flatten()
                 with right_hand_pos_array.get_lock():
@@ -490,10 +524,32 @@ if __name__ == '__main__':
 
             # solve ik using motor data and wrist pose, then use ik results to control arms.
             time_ik_start = time.time()
-            sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
+            if tracking_ok:
+                if tracking_lost:
+                    tracking_lost = False
+                    arm_ctrl.speed_gradual_max()
+                    logger_mp.warning("XR tracking recovered. Resuming teleoperation (velocity ramps up gradually).")
+                sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
+            else:
+                if not tracking_lost:
+                    tracking_lost = True
+                    logger_mp.warning(
+                        f"XR tracking lost (no valid pose update for {args.tracking_timeout:.2f}s). "
+                        f"Safety fallback: {args.tracking_fallback}."
+                    )
+                if last_sol_q is None:
+                    last_sol_q = current_lr_arm_q.copy()
+                if args.tracking_fallback == "home":
+                    # ramp each joint toward the home pose (q=0) at a bounded speed
+                    max_step = HOME_RAMP_RAD_S / args.frequency
+                    sol_q = last_sol_q + np.clip(-last_sol_q, -max_step, max_step)
+                else:  # hold
+                    sol_q = last_sol_q
+                sol_tauff = np.zeros_like(sol_q)
             time_ik_end = time.time()
             logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
             arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)
+            last_sol_q = np.asarray(sol_q).copy()
             if args.print_joints and start_time - last_joint_print_time >= args.print_joints_interval:
                 logger_mp.info(
                     "[joint_debug] arm target q(rad): "
