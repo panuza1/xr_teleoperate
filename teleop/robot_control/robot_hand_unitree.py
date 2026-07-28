@@ -240,6 +240,8 @@ class Dex3_1_Right_JointIndex(IntEnum):
 
 
 class Dex3_Controller_Button_Controller:
+    """Simple open/close grasp preset for Dex3 when using controller triggers (not per-finger retargeting)."""
+
     def __init__(self, left_trigger_in, right_trigger_in, dual_hand_data_lock=None,
                  dual_hand_state_array_out=None, dual_hand_action_array_out=None,
                  fps=100.0, simulation_mode=False, xr_motion_data_ready_in=None):

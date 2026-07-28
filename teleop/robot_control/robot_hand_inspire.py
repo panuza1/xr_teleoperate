@@ -44,9 +44,21 @@ class Inspire_Controller_DFX:
         self.subscribe_state_thread.daemon = True
         self.subscribe_state_thread.start()
 
+        # Real robot: DFX_inspire_service must publish rt/inspire/state.
+        # Sim: g1_inspire_sim / Isaac inspire DDS must publish the same topic.
+        wait_timeout_s = 15.0
+        wait_start = time.time()
         while True:
-            if any(self.right_hand_state_array): # any(self.left_hand_state_array) and 
+            if any(self.right_hand_state_array):  # any(self.left_hand_state_array) and
                 break
+            if time.time() - wait_start > wait_timeout_s:
+                raise RuntimeError(
+                    "[Inspire_Controller_DFX] Timed out waiting for rt/inspire/state.\n"
+                    "This is NOT the camera. Start the Inspire DFX service on the robot/PC2, e.g.:\n"
+                    "  ssh to 192.168.123.164 (or the onboard PC), then:\n"
+                    "  cd DFX_inspire_service/build && sudo ./inspire_g1\n"
+                    "Or temporarily test arms only by removing --ee inspire_dfx."
+                )
             time.sleep(0.01)
             logger_mp.warning("[Inspire_Controller_DFX] Waiting to subscribe dds...")
         logger_mp.info("[Inspire_Controller_DFX] Subscribe dds ok.")
