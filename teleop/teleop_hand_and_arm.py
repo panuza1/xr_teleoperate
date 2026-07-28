@@ -490,7 +490,7 @@ if __name__ == '__main__':
                         last_body_tracking_warning = time.time()
             elif body_retargeter is not None and time.time() - last_body_tracking_warning >= 5.0:
                 logger_mp.warning(
-                    "Waiting for Quest BODY_TRACKING_MOVE data. Check the WebXR body-tracking flag and permission."
+                    "Waiting for Quest BODY_MOVE data. Check the WebXR body-tracking flag and permission."
                 )
                 last_body_tracking_warning = time.time()
             
