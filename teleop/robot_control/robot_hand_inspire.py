@@ -22,46 +22,24 @@ class Inspire_Controller_DFX:
         self.fps = fps
         self.Unit_Test = Unit_Test
         self.simulation_mode = simulation_mode
+        self._state_ready = threading.Event()
         if not self.Unit_Test:
             self.hand_retargeting = HandRetargeting(HandType.INSPIRE_HAND)
         else:
             self.hand_retargeting = HandRetargeting(HandType.INSPIRE_HAND_Unit_Test)
 
+        # Shared Arrays for hand states (read by control_process)
+        self.left_hand_state_array  = Array('d', Inspire_Num_Motors, lock=True)
+        self.right_hand_state_array = Array('d', Inspire_Num_Motors, lock=True)
 
         # initialize handcmd publisher and handstate subscriber
         self.HandCmb_publisher = ChannelPublisher(kTopicInspireDFXCommand, MotorCmds_)
         self.HandCmb_publisher.Init()
 
         self.HandState_subscriber = ChannelSubscriber(kTopicInspireDFXState, MotorStates_)
-        self.HandState_subscriber.Init()
+        self.HandState_subscriber.Init(self._on_hand_state, 10)
 
-        # Shared Arrays for hand states
-        self.left_hand_state_array  = Array('d', Inspire_Num_Motors, lock=True)  
-        self.right_hand_state_array = Array('d', Inspire_Num_Motors, lock=True)
-
-        # initialize subscribe thread
-        self.subscribe_state_thread = threading.Thread(target=self._subscribe_hand_state)
-        self.subscribe_state_thread.daemon = True
-        self.subscribe_state_thread.start()
-
-        # Real robot: DFX_inspire_service must publish rt/inspire/state.
-        # Sim: g1_inspire_sim / Isaac inspire DDS must publish the same topic.
-        wait_timeout_s = 15.0
-        wait_start = time.time()
-        while True:
-            if any(self.right_hand_state_array):  # any(self.left_hand_state_array) and
-                break
-            if time.time() - wait_start > wait_timeout_s:
-                raise RuntimeError(
-                    "[Inspire_Controller_DFX] Timed out waiting for rt/inspire/state.\n"
-                    "This is NOT the camera. Start the Inspire DFX service on the robot/PC2, e.g.:\n"
-                    "  ssh to 192.168.123.164 (or the onboard PC), then:\n"
-                    "  cd DFX_inspire_service/build && sudo ./inspire_g1\n"
-                    "Or temporarily test arms only by removing --ee inspire_dfx."
-                )
-            time.sleep(0.01)
-            logger_mp.warning("[Inspire_Controller_DFX] Waiting to subscribe dds...")
-        logger_mp.info("[Inspire_Controller_DFX] Subscribe dds ok.")
+        self._wait_for_hand_state()
 
         hand_control_process = Process(target=self.control_process, args=(left_hand_array, right_hand_array,  self.left_hand_state_array, self.right_hand_state_array,
                                                                           dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, xr_motion_data_ready_in))
@@ -70,15 +48,26 @@ class Inspire_Controller_DFX:
 
         logger_mp.info("Initialize Inspire_Controller_DFX OK!")
 
-    def _subscribe_hand_state(self):
-        while True:
-            hand_msg  = self.HandState_subscriber.Read()
-            if hand_msg is not None:
-                for idx, id in enumerate(Inspire_Left_Hand_JointIndex):
-                    self.left_hand_state_array[idx] = hand_msg.states[id].q
-                for idx, id in enumerate(Inspire_Right_Hand_JointIndex):
-                    self.right_hand_state_array[idx] = hand_msg.states[id].q
-            time.sleep(0.002)
+    def _on_hand_state(self, hand_msg):
+        for idx, id in enumerate(Inspire_Left_Hand_JointIndex):
+            self.left_hand_state_array[idx] = hand_msg.states[id].q
+        for idx, id in enumerate(Inspire_Right_Hand_JointIndex):
+            self.right_hand_state_array[idx] = hand_msg.states[id].q
+        self._state_ready.set()
+
+    def _wait_for_hand_state(self, timeout_s: float = 15.0):
+        if self.simulation_mode:
+            logger_mp.info("[Inspire_Controller_DFX] Simulation mode: skip hand state wait.")
+            return
+        logger_mp.info("[Inspire_Controller_DFX] Waiting for rt/inspire/state...")
+        if not self._state_ready.wait(timeout=timeout_s):
+            raise RuntimeError(
+                "[Inspire_Controller_DFX] Timed out waiting for rt/inspire/state.\n"
+                "Real robot: DFX_inspire_service must publish rt/inspire/state.\n"
+                "Sim: g1_inspire_sim / Isaac inspire DDS must publish the same topic.\n"
+                "Or temporarily test arms only by removing --ee inspire_dfx."
+            )
+        logger_mp.info("[Inspire_Controller_DFX] Hand state received.")
 
     def ctrl_dual_hand(self, left_q_target, right_q_target):
         """
