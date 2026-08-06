@@ -51,7 +51,8 @@ python teleop_hand_and_arm.py --ee=dex3 --sim --record
 
 Then: put on the headset → connect to the same Wi-Fi → open the Vuer URL in a browser → click **Virtual Reality** → align your arms to the robot's start pose → press **r** to start teleop → press **s** to start/stop recording → press **q** to quit.
 
-Full step-by-step with screenshots is in [§2.2 Launch (Simulation)](#22--launch).
+Full step-by-step with screenshots is in [§2.2 Launch (Simulation)](#22--launch).  
+Sim ↔ real parameter guide (test in sim, then deploy): [docs/sim_to_real.md](docs/sim_to_real.md).
 
 ---
 
