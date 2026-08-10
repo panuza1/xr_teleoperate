@@ -1,5 +1,7 @@
 import numpy as np
 
+from teleop.utils.waist_safety import WAIST_LIMITS_RAD, clamp_waist_target
+
 
 BODY_JOINT_INDEX = {
     "hips": 0,
@@ -17,8 +19,8 @@ class QuestUpperBodyRetargeter:
         self.max_step = float(max_step)
         self.reference_frame = None
         self.output = np.zeros(3, dtype=np.float64)
-        self.lower_limits = np.array([-0.8, -0.35, -0.35])
-        self.upper_limits = np.array([0.8, 0.35, 0.35])
+        self.lower_limits = -WAIST_LIMITS_RAD.copy()
+        self.upper_limits = WAIST_LIMITS_RAD.copy()
 
     @staticmethod
     def _normalize(vector):
@@ -82,3 +84,8 @@ class QuestUpperBodyRetargeter:
 
     def reset(self):
         self.reference_frame = None
+        self.output = np.zeros(3, dtype=np.float64)
+
+    def set_output(self, q_target):
+        """Synchronize smoothing state after an external safety fallback."""
+        self.output = clamp_waist_target(q_target)

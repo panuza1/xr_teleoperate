@@ -24,6 +24,11 @@ from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
 from sshkeyboard import listen_keyboard, stop_listening
 
 from teleop.utils.xr_tracking_fallback import resolve_arm_ik_target, xr_tracking_ok
+from teleop.utils.waist_safety import (
+    WAIST_LIMITS_RAD,
+    body_tracking_ok,
+    resolve_waist_fallback,
+)
 
 # for simulation
 from unitree_sdk2py.core.channel import ChannelPublisher
@@ -102,6 +107,144 @@ def format_joint_positions(names, values):
         f"{name}={float(value):+.4f}" for name, value in zip(names, values)
     )
 
+
+def run_waist_dry_run(args):
+    """Run Quest waist retargeting without initializing or publishing DDS."""
+    global START, STOP, READY
+
+    from teleop.robot_control.body_retargeting import QuestUpperBodyRetargeter
+
+    img_client = None
+    tv_wrapper = None
+    ipc_server = None
+    listen_keyboard_thread = None
+    try:
+        img_client = ImageClient(host=args.img_server_ip, request_bgr=True)
+        camera_config = img_client.get_cam_config()
+        head_camera_config = camera_config['head_camera']
+        use_webrtc = head_camera_config['enable_webrtc']
+        use_zmq = head_camera_config['enable_zmq']
+        if args.image_transport == 'webrtc':
+            if not use_webrtc:
+                raise ValueError("WebRTC is disabled in the image server camera config.")
+            use_zmq = False
+        elif args.image_transport == 'zmq':
+            if not use_zmq:
+                raise ValueError("ZMQ is disabled in the image server camera config.")
+            use_webrtc = False
+        xr_need_local_img = not (args.display_mode == 'pass-through' or use_webrtc)
+
+        tv_wrapper = TeleVuerWrapper(
+            use_hand_tracking=True,
+            use_body_tracking=True,
+            binocular=head_camera_config['binocular'],
+            img_shape=head_camera_config['image_shape'],
+            display_mode=args.display_mode,
+            zmq=use_zmq,
+            webrtc=use_webrtc,
+            webrtc_url=f"https://{args.img_server_ip}:{head_camera_config['webrtc_port']}/offer",
+            arm_reference_mode="head_yaw",
+        )
+
+        if args.ipc:
+            ipc_server = IPC_Server(on_press=on_press, get_state=get_state)
+            ipc_server.start()
+        else:
+            listen_keyboard_thread = threading.Thread(
+                target=listen_keyboard,
+                kwargs={"on_press": on_press, "until": None, "sequential": False},
+                daemon=True,
+            )
+            listen_keyboard_thread.start()
+
+        logger_mp.warning("WAIST DRY RUN: DDS is not initialized; no robot or hand command can be published.")
+        logger_mp.info(
+            "Waist software limits deg (yaw/roll/pitch): "
+            f"{np.rad2deg(WAIST_LIMITS_RAD).tolist()}."
+        )
+        logger_mp.info("Stand upright, then press [r] to calibrate and begin logging. Press [q] to exit.")
+        READY = True
+        while not START and not STOP:
+            if head_camera_config['enable_zmq'] and xr_need_local_img:
+                head_img = img_client.get_head_frame()
+                if head_img.bgr is not None:
+                    tv_wrapper.render_to_xr(head_img.bgr)
+            time.sleep(0.033)
+
+        retargeter = QuestUpperBodyRetargeter()
+        last_target = np.zeros(3, dtype=np.float64)
+        had_valid_target = False
+        tracking_lost = False
+        last_log_time = 0.0
+        last_warning_time = 0.0
+
+        while not STOP:
+            start_time = time.time()
+            if head_camera_config['enable_zmq'] and xr_need_local_img:
+                head_img = img_client.get_head_frame()
+                if head_img.bgr is not None:
+                    tv_wrapper.render_to_xr(head_img.bgr)
+
+            tele_data = tv_wrapper.get_tele_data()
+            fresh = body_tracking_ok(
+                tele_data.body_tracking_ready,
+                tele_data.body_pose_updated_at,
+                start_time,
+                args.tracking_timeout,
+            )
+            if fresh:
+                try:
+                    was_calibrated = retargeter.calibrated
+                    last_target = retargeter.retarget(tele_data.body_poses)
+                    had_valid_target = True
+                    if not was_calibrated:
+                        logger_mp.info("Quest body tracking calibrated.")
+                    if tracking_lost:
+                        tracking_lost = False
+                        logger_mp.warning("Quest body tracking recovered.")
+                except ValueError as exc:
+                    fresh = False
+                    if start_time - last_warning_time >= 2.0:
+                        logger_mp.warning(f"Quest body frame rejected: {exc}")
+                        last_warning_time = start_time
+
+            if not fresh:
+                if had_valid_target:
+                    last_target = resolve_waist_fallback(
+                        last_target,
+                        args.tracking_fallback,
+                        args.frequency,
+                    )
+                    retargeter.set_output(last_target)
+                    if not tracking_lost:
+                        tracking_lost = True
+                        logger_mp.warning(
+                            f"Quest body tracking lost. Waist fallback: {args.tracking_fallback}."
+                        )
+                elif start_time - last_warning_time >= 5.0:
+                    logger_mp.warning("Waiting for fresh Quest BODY_MOVE data; no target is being produced.")
+                    last_warning_time = start_time
+
+            if had_valid_target and start_time - last_log_time >= args.print_joints_interval:
+                logger_mp.info(
+                    "[waist_dry_run] target q(rad), NO DDS: "
+                    + format_joint_positions(WAIST_JOINT_NAMES, last_target)
+                )
+                last_log_time = start_time
+
+            time.sleep(max(0.0, (1.0 / args.frequency) - (time.time() - start_time)))
+    finally:
+        READY = False
+        if ipc_server is not None:
+            ipc_server.stop()
+        elif listen_keyboard_thread is not None:
+            stop_listening()
+            listen_keyboard_thread.join(timeout=1.0)
+        if img_client is not None:
+            img_client.close()
+        if tv_wrapper is not None:
+            tv_wrapper.close()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # basic control parameters
@@ -125,13 +268,17 @@ if __name__ == '__main__':
         '--body-tracking',
         choices=['off', 'upper'],
         default='off',
-        help='Experimental Quest torso tracking for G1 waist control. Simulation-only.',
+        help='Experimental Quest torso tracking for G1 waist control.',
     )
+    parser.add_argument('--allow-real-waist', action='store_true',
+                        help='Explicitly opt in to real G1 waist commands via --motion/rt/arm_sdk.')
+    parser.add_argument('--dry-run-waist', action='store_true',
+                        help='Log waist targets without initializing DDS or any robot/hand controller.')
     parser.add_argument('--tracking-timeout', type=float, default=0.5,
                         help='Seconds without XR pose updates before tracking is considered lost.')
-    parser.add_argument('--tracking-fallback', choices=['hold', 'home'], default='hold',
-                        help='Safety behavior on XR tracking loss: hold the last arm pose, '
-                             'or slowly ramp the arms back to the home (default) pose.')
+    parser.add_argument('--tracking-fallback', choices=['hold', 'home'], default='home',
+                        help='Safety behavior on XR tracking loss: hold the last arm/waist pose, '
+                             'or slowly ramp arms/waist back to the home (default) pose.')
     parser.add_argument('--print-joints', action='store_true',
                         help='Print target joint positions sent to DDS.')
     parser.add_argument('--print-joints-interval', type=float, default=1.0,
@@ -148,15 +295,48 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.body_tracking == 'upper':
-        if not args.sim:
-            parser.error('--body-tracking upper is restricted to --sim')
         if args.input_mode != 'hand':
             parser.error('--body-tracking upper requires --input-mode hand')
         if args.arm != 'G1_29':
             parser.error('--body-tracking upper currently supports --arm G1_29 only')
-        if args.motion:
+        if args.dry_run_waist:
+            if args.motion:
+                parser.error('--dry-run-waist cannot be combined with --motion')
+            if args.allow_real_waist:
+                parser.error('--dry-run-waist cannot be combined with --allow-real-waist')
+        elif not args.sim:
+            if not args.allow_real_waist:
+                parser.error(
+                    'real --body-tracking upper requires explicit --allow-real-waist '
+                    '(use --dry-run-waist for log-only verification)'
+                )
+            if not args.motion:
+                parser.error('real waist control requires --motion so commands use rt/arm_sdk')
+        elif args.motion:
             parser.error('--body-tracking upper cannot be combined with --motion')
+        if args.allow_real_waist and args.sim:
+            parser.error('--allow-real-waist cannot be combined with --sim')
+    elif args.allow_real_waist or args.dry_run_waist:
+        parser.error('--allow-real-waist/--dry-run-waist require --body-tracking upper')
+    if not np.isfinite(args.frequency) or args.frequency <= 0.0:
+        parser.error('--frequency must be positive')
+    if not np.isfinite(args.tracking_timeout) or args.tracking_timeout <= 0.0:
+        parser.error('--tracking-timeout must be positive')
+    if not np.isfinite(args.print_joints_interval) or args.print_joints_interval <= 0.0:
+        parser.error('--print-joints-interval must be positive')
     logger_mp.debug(f"args: {args}")
+
+    if args.dry_run_waist:
+        run_waist_dry_run(args)
+        sys.exit(0)
+
+    arm_ctrl = None
+    img_client = None
+    tv_wrapper = None
+    ipc_server = None
+    listen_keyboard_thread = None
+    sim_state_subscriber = None
+    recorder = None
 
     try:
         # setup dds communication domains id
@@ -249,6 +429,10 @@ if __name__ == '__main__':
         if args.body_tracking == "upper":
             from teleop.robot_control.body_retargeting import QuestUpperBodyRetargeter
             body_retargeter = QuestUpperBodyRetargeter()
+            if args.allow_real_waist:
+                logger_mp.warning(
+                    "REAL G1 WAIST CONTROL OPTED IN: rt/arm_sdk remains at weight 0 until [r]."
+                )
             logger_mp.info(
                 "Quest upper-body tracking enabled. Stand upright when pressing [r] to calibrate."
             )
@@ -384,14 +568,23 @@ if __name__ == '__main__':
                 if head_img.bgr is not None:
                     tv_wrapper.render_to_xr(head_img.bgr)
 
-        logger_mp.info("---------------------🚀start Tracking🚀-------------------------")
-        arm_ctrl.speed_gradual_max()
+        if START:
+            logger_mp.info("---------------------🚀start Tracking🚀-------------------------")
+            arm_ctrl.speed_gradual_max()
+            if args.body_tracking == "upper":
+                arm_ctrl.activate_real_waist_control()
+        else:
+            logger_mp.info("Stop requested before tracking started; waist SDK weight remains zero.")
 
         head_img = None
         left_wrist_img = None
         right_wrist_img = None
         last_joint_print_time = 0.0
-        last_waist_q_target = None
+        last_waist_q_target = (
+            arm_ctrl.get_current_waist_q() if body_retargeter is not None else None
+        )
+        waist_had_valid_target = False
+        waist_tracking_lost = False
 
         # XR tracking-loss safety state
         tracking_lost = False
@@ -476,23 +669,51 @@ if __name__ == '__main__':
             with xr_motion_data_ready.get_lock():
                 xr_motion_data_ready.value = tele_data.motion_data_ready
 
-            if body_retargeter is not None and tele_data.body_tracking_ready:
-                try:
-                    was_calibrated = body_retargeter.calibrated
-                    waist_q_target = body_retargeter.retarget(tele_data.body_poses)
-                    arm_ctrl.ctrl_waist(waist_q_target)
-                    last_waist_q_target = waist_q_target
-                    if not was_calibrated:
-                        logger_mp.info("Quest body tracking calibrated.")
-                except ValueError as exc:
-                    if time.time() - last_body_tracking_warning >= 2.0:
-                        logger_mp.warning(f"Quest body frame rejected: {exc}")
-                        last_body_tracking_warning = time.time()
-            elif body_retargeter is not None and time.time() - last_body_tracking_warning >= 5.0:
-                logger_mp.warning(
-                    "Waiting for Quest BODY_MOVE data. Check the WebXR body-tracking flag and permission."
+            if body_retargeter is not None:
+                waist_tracking_fresh = body_tracking_ok(
+                    tele_data.body_tracking_ready,
+                    tele_data.body_pose_updated_at,
+                    start_time,
+                    args.tracking_timeout,
                 )
-                last_body_tracking_warning = time.time()
+                if waist_tracking_fresh:
+                    try:
+                        was_calibrated = body_retargeter.calibrated
+                        last_waist_q_target = body_retargeter.retarget(tele_data.body_poses)
+                        waist_had_valid_target = True
+                        arm_ctrl.ctrl_waist(last_waist_q_target)
+                        if not was_calibrated:
+                            logger_mp.info("Quest body tracking calibrated.")
+                        if waist_tracking_lost:
+                            waist_tracking_lost = False
+                            logger_mp.warning("Quest body tracking recovered; waist control resumed.")
+                    except ValueError as exc:
+                        waist_tracking_fresh = False
+                        if start_time - last_body_tracking_warning >= 2.0:
+                            logger_mp.warning(f"Quest body frame rejected: {exc}")
+                            last_body_tracking_warning = start_time
+
+                if not waist_tracking_fresh:
+                    if waist_had_valid_target:
+                        last_waist_q_target = resolve_waist_fallback(
+                            last_waist_q_target,
+                            args.tracking_fallback,
+                            args.frequency,
+                        )
+                        body_retargeter.set_output(last_waist_q_target)
+                        arm_ctrl.ctrl_waist(last_waist_q_target)
+                        if not waist_tracking_lost:
+                            waist_tracking_lost = True
+                            logger_mp.warning(
+                                f"Quest body tracking lost (no valid update for "
+                                f"{args.tracking_timeout:.2f}s). Waist fallback: "
+                                f"{args.tracking_fallback}."
+                            )
+                    elif start_time - last_body_tracking_warning >= 5.0:
+                        logger_mp.warning(
+                            "Waiting for fresh Quest BODY_MOVE data; waist remains at its initial target."
+                        )
+                        last_body_tracking_warning = start_time
             
             # high level control
             if args.input_mode == "controller" and args.motion:
@@ -717,16 +938,21 @@ if __name__ == '__main__':
         logger_mp.error(traceback.format_exc())
     finally:
         try:
-            arm_ctrl.ctrl_dual_arm_go_home()
+            if arm_ctrl is not None and getattr(arm_ctrl, "real_waist_control", False):
+                # The blend weight is shared by arm and waist commands. Hand
+                # control back to the robot's motion controller before exit.
+                arm_ctrl.release_real_waist_control()
+            elif arm_ctrl is not None:
+                arm_ctrl.ctrl_dual_arm_go_home()
         except Exception as e:
-            logger_mp.error(f"Failed to ctrl_dual_arm_go_home: {e}")
+            logger_mp.error(f"Failed to release arm/waist control safely: {e}")
         
         try:
-            if args.ipc:
+            if args.ipc and ipc_server is not None:
                 ipc_server.stop()
-            else:
+            elif listen_keyboard_thread is not None:
                 stop_listening()
-                listen_keyboard_thread.join()
+                listen_keyboard_thread.join(timeout=1.0)
         except Exception as e:
             logger_mp.error(f"Failed to stop keyboard listener or ipc server: {e}")
         
@@ -737,7 +963,8 @@ if __name__ == '__main__':
             logger_mp.error(f"Failed to close image client: {e}")
 
         try:
-            tv_wrapper.close()
+            if tv_wrapper is not None:
+                tv_wrapper.close()
         except Exception as e:
             logger_mp.error(f"Failed to close televuer wrapper: {e}")
 
@@ -750,13 +977,13 @@ if __name__ == '__main__':
             logger_mp.error(f"Failed to exit debug mode: {e}")
 
         try:
-            if args.sim:
+            if args.sim and sim_state_subscriber is not None:
                 sim_state_subscriber.stop_subscribe()
         except Exception as e:
             logger_mp.error(f"Failed to stop sim state subscriber: {e}")
         
         try:
-            if args.record:
+            if args.record and recorder is not None:
                 recorder.close()
         except Exception as e:
             logger_mp.error(f"Failed to close recorder: {e}")
