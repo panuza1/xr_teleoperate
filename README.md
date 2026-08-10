@@ -56,9 +56,9 @@ Sim ↔ real parameter guide (test in sim, then deploy): [docs/sim_to_real.md](d
 
 ---
 
-## 🎯 Real Example — Physical G1 + Inspire Hand, Upper Body Only
+## 🎯 Real Example — Physical G1 + Inspire Hand, Arms Only
 
-This is a full physical-deployment launch command (no `--sim`), tracking only the upper body, viewing through the pass-through window, with images sent over WebRTC:
+This is an arm-and-hand physical-deployment launch command (no `--sim`), viewing through the pass-through window, with images sent over WebRTC:
 
 ```bash
 python teleop_hand_and_arm.py \
@@ -66,10 +66,7 @@ python teleop_hand_and_arm.py \
   --arm G1_29 \
   --ee inspire_dfx \
   --input-mode hand \
-  --body-tracking upper \
   --motion \
-  --allow-real-waist \
-  --tracking-fallback home \
   --display-mode ego \
   --image-transport webrtc
 ```
@@ -82,33 +79,16 @@ python teleop_hand_and_arm.py \
 | `--arm G1_29` | Robot is a G1 with the 29-DoF arm. |
 | `--ee inspire_dfx` | Inspire DFX dexterous hand as the end-effector — needs the [DFX_inspire_service](https://github.com/unitreerobotics/DFX_inspire_service) running on PC2 (§3.2). |
 | `--input-mode hand` | Controlling with hand tracking (no physical controller needed). |
-| `--body-tracking upper` | Tracks the torso and retargets it to the three G1 waist joints; it does not command a head joint. |
-| `--motion` | Uses `rt/arm_sdk`, leaving the robot motion controller responsible for balance. Required for real waist control. |
-| `--allow-real-waist` | Explicit safety opt-in required before computed waist targets can reach real hardware. |
-| `--tracking-fallback home` | Slowly returns arms and waist toward home if their XR streams become stale. |
+| `--motion` | Uses `rt/arm_sdk`, leaving the robot motion controller responsible for balance. |
 | `--display-mode ego` | Headset shows pass-through video plus a small first-person robot-camera window, instead of going fully immersive. |
 | `--image-transport webrtc` | Camera stream comes in over WebRTC (lower latency, needs the SSL certs from §1.1 configured on both Host and PC2). |
 
 **Before running this:**
-1. Complete a `--dry-run-waist` session first and verify signs, calibration, limits, and timeout fallback without DDS.
-2. For the first DDS test, mechanically secure the robot on a stand/gantry; never test while freely standing.
-3. Keep the e-stop ready and have a second person spot from outside the waist/arm swing radius.
-4. `teleimager.image_server` is running on PC2 (`10.61.6.62`), configured with the certs from §1.1.
-5. If using `inspire_dfx`, the `DFX_inspire_service` is running on PC2 and the hand test (`hand_example`) opened/closed successfully at least once.
-6. You're in the `tv` conda environment on the host.
-
-Dry-run command (no DDS initialization and no robot/hand controller):
-
-```bash
-python teleop_hand_and_arm.py \
-  --img-server-ip 10.61.6.62 \
-  --arm G1_29 \
-  --input-mode hand \
-  --body-tracking upper \
-  --dry-run-waist \
-  --display-mode ego \
-  --image-transport webrtc
-```
+1. Mechanically secure the robot on a stand/gantry for the first test; never test while freely standing.
+2. Keep the e-stop ready and have a second person spot from outside the arm swing radius.
+3. `teleimager.image_server` is running on PC2 (`10.61.6.62`), configured with the certs from §1.1.
+4. If using `inspire_dfx`, the `DFX_inspire_service` is running on PC2 and the hand test (`hand_example`) opened/closed successfully at least once.
+5. You're in the `tv` conda environment on the host.
 
 **Then, same interaction pattern as the simulation flow (§2.2):** put on headset → connect Wi-Fi → open the Vuer URL → click **Virtual Reality** → align arms to the robot's initial pose → press **r** to start teleop → **s** to record → **q** to quit.
 
@@ -227,9 +207,6 @@ More: [Conda User Guide](https://docs.conda.io/projects/conda/en/latest/user-gui
 | `--ee` | End-effector type | `dex1`, `dex3`, `inspire_ftp`, `inspire_dfx`, `brainco` | none |
 | `--img-server-ip` | Image server IP (WebRTC signaling) | IPv4 | `192.168.123.164` |
 | `--network-interface` | CycloneDDS network interface | interface name | none |
-| `--body-tracking` | Waist body-tracking mode | `off`, `upper` | `off` |
-| `--tracking-timeout` | Seconds before XR tracking is stale | positive float | `0.5` |
-| `--tracking-fallback` | Stale-tracking behavior for arms and waist | `hold`, `home` | `home` |
 | `--image-transport` | How the camera stream is delivered | `auto`, `webrtc`, `zmq` | `auto` |
 
 **Mode switches:**
@@ -239,8 +216,6 @@ More: [Conda User Guide](https://docs.conda.io/projects/conda/en/latest/user-gui
 | `--motion` | Run alongside the robot's motion controller. Hand mode → R3 controller drives walking. Controller mode → joysticks also drive walking. Only "Regular mode" (R1+X), not "Running mode". |
 | `--headless` | For headless machines (e.g. PC2) with no display |
 | `--sim` | [Simulation mode](https://github.com/unitreerobotics/unitree_sim_isaaclab) |
-| `--allow-real-waist` | Explicit opt-in for real G1 waist commands; requires `--body-tracking upper --motion` |
-| `--dry-run-waist` | Retarget and log waist targets without initializing DDS or robot/hand controllers |
 | `--ipc` | Control the program's state via IPC (for agent integration) |
 | `--affinity` | Pin CPU cores — leave alone unless you know why you need it |
 | `--record` | Press **r** to start teleop, **s** to start/stop recording (repeatable) |
@@ -264,44 +239,6 @@ python sim_main.py --device cpu --enable_cameras \
 ```
 
 ⚠️ **Click once inside the sim window to activate it.** Terminal should show `controller started, start main loop...`
-
-<details>
-<summary><b>Example: G1 + Inspire hand, whole-body task, GPU-accelerated</b></summary>
-
-```bash
-# Terminal 1: sim, running on GPU with an Inspire whole-body task
-python sim_main.py \
-  --device cuda:0 \
-  --enable_cameras \
-  --task Isaac-Move-Cylinder-G129-Inspire-Wholebody \
-  --robot_type g129 \
-  --enable_inspire_dds \
-  --xr_upperbody
-```
-
-| Flag | This run |
-|---|---|
-| `--device cuda:0` | Runs the sim on GPU 0 instead of CPU — much faster, but check VRAM headroom. |
-| `--task Isaac-Move-Cylinder-G129-Inspire-Wholebody` | The Inspire-hand, whole-body variant of the move/cylinder task. |
-| `--enable_inspire_dds` | Turns on the DDS topic for the Inspire hand (equivalent role to `--enable_dex3_dds` for Dex3). |
-| `--xr_upperbody` | Tells the sim to only expect/drive upper-body XR data — pair this with `--body-tracking upper` on the teleop side below. |
-
-```bash
-# Terminal 2: matching teleop launch (upper-body only, Inspire DFX hand)
-cd ~/xr_teleoperate/teleop/
-python teleop_hand_and_arm.py \
-  --img-server-ip 10.61.6.62 \
-  --arm G1_29 \
-  --ee inspire_dfx \
-  --input-mode hand \
-  --body-tracking upper \
-  --sim \
-  --display-mode ego \
-  --image-transport webrtc
-```
-
-⚠️ The `--xr_upperbody` on the sim side and `--body-tracking upper` on the teleop side need to match — otherwise the sim is set up to expect a different set of tracked joints than what teleop is actually sending.
-</details>
 
 ### 2.2 🚀 Launch
 

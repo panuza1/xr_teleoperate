@@ -14,14 +14,6 @@ from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 import logging_mp
 logger_mp = logging_mp.getLogger(__name__)
 
-from teleop.utils.waist_safety import (
-    WAIST_LIMITS_RAD,
-    WAIST_MAX_DELTA_PER_CYCLE_RAD,
-    clamp_waist_target,
-    rate_limit_sdk_weight,
-    rate_limit_waist_target,
-)
-
 kTopicLowCommand_Debug  = "rt/lowcmd"
 kTopicLowCommand_Motion = "rt/arm_sdk"
 kTopicLowState = "rt/lowstate"
@@ -81,34 +73,22 @@ class DataBuffer:
             self.data = data
 
 class G1_29_ArmController:
-    def __init__(self, motion_mode=False, simulation_mode=False, upper_body_tracking=False):
+    def __init__(self, motion_mode = False, simulation_mode = False):
         logger_mp.info("Initialize G1_29_ArmController...")
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
         self.motion_mode = motion_mode
         self.simulation_mode = simulation_mode
-        self.upper_body_tracking = upper_body_tracking
-        self.real_waist_control = upper_body_tracking and motion_mode and not simulation_mode
-        if upper_body_tracking and not simulation_mode and not motion_mode:
-            raise ValueError("real G1 waist control requires motion mode (rt/arm_sdk)")
-        self.waist_q_target = np.zeros(3)
-        self.waist_q_command = np.zeros(3)
         self.kp_high = 300.0
         self.kd_high = 3.0
         self.kp_low = 80.0
         self.kd_low = 3.0
         self.kp_wrist = 40.0
         self.kd_wrist = 1.5
-        # Unitree's G1 arm7 SDK example uses these gains for its waist commands.
-        self.kp_waist = 60.0
-        self.kd_waist = 1.5
 
         self.all_motor_q = None
         self.arm_velocity_limit = 20.0
         self.control_dt = 1.0 / 250.0
-        self._sdk_weight = 0.0 if self.real_waist_control else 1.0
-        self._sdk_weight_target = self._sdk_weight
-        self._sdk_weight_delta_per_cycle = self.control_dt / 2.0
 
         self._speed_gradual_max = False
         self._gradual_start_time = None
@@ -146,23 +126,11 @@ class G1_29_ArmController:
         self.msg.mode_machine = 0 if self.simulation_mode else self.get_mode_machine()
 
         self.all_motor_q = self.get_current_motor_q()
-        current_waist_q = self.all_motor_q[12:15].copy()
-        self.waist_q_command = current_waist_q
-        self.waist_q_target = clamp_waist_target(current_waist_q)
-        if self.real_waist_control:
-            # Weight is still zero, but matching measured arm state prevents a
-            # discontinuity when the shared arm_sdk weight begins to rise.
-            self.q_target = self.get_current_dual_arm_q()
         logger_mp.debug(f"Current all body motor state q:\n{self.all_motor_q} \n")
         logger_mp.debug(f"Current two arms motor state q:\n{self.get_current_dual_arm_q()}\n")
-        logger_mp.info("Initialize G1 command targets...")
+        logger_mp.info("Lock all joints except two arms...")
 
         arm_indices = set(member.value for member in G1_29_JointArmIndex)
-        waist_indices = {
-            G1_29_JointIndex.kWaistYaw.value,
-            G1_29_JointIndex.kWaistRoll.value,
-            G1_29_JointIndex.kWaistPitch.value,
-        }
         for id in G1_29_JointIndex:
             self.msg.motor_cmd[id].mode = 1
             if id.value in arm_indices:
@@ -172,9 +140,6 @@ class G1_29_ArmController:
                 else:
                     self.msg.motor_cmd[id].kp = self.kp_low
                     self.msg.motor_cmd[id].kd = self.kd_low
-            elif self.upper_body_tracking and id.value in waist_indices:
-                self.msg.motor_cmd[id].kp = self.kp_waist
-                self.msg.motor_cmd[id].kd = self.kd_waist
             else:
                 if self._Is_weak_motor(id):
                     self.msg.motor_cmd[id].kp = self.kp_low
@@ -183,7 +148,7 @@ class G1_29_ArmController:
                     self.msg.motor_cmd[id].kp = self.kp_high
                     self.msg.motor_cmd[id].kd = self.kd_high
             self.msg.motor_cmd[id].q  = self.all_motor_q[id]
-        logger_mp.info("G1 command targets initialized.")
+        logger_mp.info("Lock OK!")
 
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
@@ -191,16 +156,6 @@ class G1_29_ArmController:
         self.publish_thread.daemon = True
         self.publish_thread.start()
 
-        if self.upper_body_tracking:
-            logger_mp.info(
-                "[G1_29_ArmController] waist software limits deg (yaw/roll/pitch): "
-                f"{np.rad2deg(WAIST_LIMITS_RAD).tolist()}; DDS-cycle max delta rad: "
-                f"{WAIST_MAX_DELTA_PER_CYCLE_RAD.tolist()}."
-            )
-            logger_mp.info(
-                f"[G1_29_ArmController] waist command topic: "
-                f"{kTopicLowCommand_Motion if self.motion_mode else kTopicLowCommand_Debug}."
-            )
         logger_mp.info("Initialize G1_29_ArmController OK!")
 
     def _subscribe_motor_state(self):
@@ -222,25 +177,15 @@ class G1_29_ArmController:
         return cliped_arm_q_target
 
     def _ctrl_motor_state(self):
+        if self.motion_mode:
+            self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 1.0;
+
         while True:
             start_time = time.time()
 
             with self.ctrl_lock:
-                arm_q_target = self.q_target.copy()
-                arm_tauff_target = self.tauff_target.copy()
-                if self.upper_body_tracking:
-                    self.waist_q_command = rate_limit_waist_target(
-                        self.waist_q_target,
-                        self.waist_q_command,
-                    )
-                waist_q_command = self.waist_q_command.copy()
-                if self.real_waist_control:
-                    self._sdk_weight = rate_limit_sdk_weight(
-                        self._sdk_weight,
-                        self._sdk_weight_target,
-                        self._sdk_weight_delta_per_cycle,
-                    )
-                sdk_weight = self._sdk_weight
+                arm_q_target     = self.q_target
+                arm_tauff_target = self.tauff_target
 
             if self.simulation_mode:
                 cliped_arm_q_target = arm_q_target
@@ -251,13 +196,6 @@ class G1_29_ArmController:
                 self.msg.motor_cmd[id].q = cliped_arm_q_target[idx]
                 self.msg.motor_cmd[id].dq = 0
                 self.msg.motor_cmd[id].tau = arm_tauff_target[idx]   
-            if self.upper_body_tracking:
-                for idx, motor_idx in enumerate(range(12, 15)):
-                    self.msg.motor_cmd[motor_idx].q = waist_q_command[idx]
-                    self.msg.motor_cmd[motor_idx].dq = 0.0
-                    self.msg.motor_cmd[motor_idx].tau = 0.0
-            if self.motion_mode:
-                self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = sdk_weight
 
             self.msg.crc = self.crc.Crc(self.msg)
             self.lowcmd_publisher.Write(self.msg)
@@ -278,46 +216,6 @@ class G1_29_ArmController:
         with self.ctrl_lock:
             self.q_target = q_target
             self.tauff_target = tauff_target
-
-    def ctrl_waist(self, q_target):
-        """Set G1 waist targets (yaw, roll, pitch)."""
-        if not self.upper_body_tracking:
-            raise RuntimeError("waist control is not enabled")
-        target = clamp_waist_target(q_target)
-        with self.ctrl_lock:
-            self.waist_q_target = target.copy()
-
-    def get_current_waist_q(self):
-        """Return measured G1 waist positions in yaw, roll, pitch order."""
-        state = self.lowstate_buffer.GetData()
-        return np.array([state.motor_state[id].q for id in range(12, 15)])
-
-    def activate_real_waist_control(self):
-        """Begin the two-second arm_sdk handover for opted-in real waist control."""
-        if not self.real_waist_control:
-            return
-        with self.ctrl_lock:
-            self._sdk_weight_target = 1.0
-        logger_mp.info("[G1_29_ArmController] arm_sdk weight ramping 0.0 -> 1.0 over 2 seconds.")
-
-    def release_real_waist_control(self, timeout=3.0):
-        """Ramp arm_sdk weight back to zero and wait for the handback to complete."""
-        if not self.real_waist_control:
-            return True
-        with self.ctrl_lock:
-            self._sdk_weight_target = 0.0
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self.ctrl_lock:
-                weight = self._sdk_weight
-            if weight <= 1e-6:
-                logger_mp.info("[G1_29_ArmController] arm_sdk weight released to 0.0.")
-                return True
-            time.sleep(0.01)
-        logger_mp.error(
-            f"[G1_29_ArmController] arm_sdk weight release timed out at {weight:.3f}."
-        )
-        return False
 
     def get_mode_machine(self):
         '''Return current dds mode machine.'''
