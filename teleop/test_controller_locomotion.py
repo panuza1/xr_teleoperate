@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from teleop.utils.controller_locomotion import (
     CONTROLLER_VELOCITY_SCALE,
+    CONTROLLER_YAW_SCALE,
     apply_controller_locomotion,
     controller_locomotion_enabled,
 )
@@ -20,10 +21,13 @@ class FakeLocoClient:
         self.calls.append(("Damp",))
 
 
-def tele_data(left=(0.0, 0.0), right=(0.0, 0.0), updated_at=10.0,
+def tele_data(left=(0.0, 0.0), right=(0.0, 0.0),
+              left_updated_at=10.0, right_updated_at=10.0,
               left_pressed=False, right_pressed=False, a_button=False):
     return SimpleNamespace(
-        controller_data_updated_at=updated_at,
+        controller_data_updated_at=right_updated_at,
+        left_controller_data_updated_at=left_updated_at,
+        right_controller_data_updated_at=right_updated_at,
         left_ctrl_thumbstickValue=left,
         right_ctrl_thumbstickValue=right,
         left_ctrl_thumbstick=left_pressed,
@@ -33,9 +37,12 @@ def tele_data(left=(0.0, 0.0), right=(0.0, 0.0), updated_at=10.0,
 
 
 class ControllerLocomotionTest(unittest.TestCase):
-    def assert_move(self, left, right, expected, now=10.1, updated_at=10.0):
+    def assert_move(self, left, right, expected, now=10.1,
+                    left_updated_at=10.0, right_updated_at=10.0):
         client = FakeLocoClient()
-        apply_controller_locomotion(tele_data(left, right, updated_at), client, now)
+        apply_controller_locomotion(
+            tele_data(left, right, left_updated_at, right_updated_at), client, now
+        )
         self.assertEqual(client.calls[0][0], "Move")
         for actual, wanted in zip(client.calls[0][1:], expected):
             self.assertAlmostEqual(actual, wanted)
@@ -46,24 +53,38 @@ class ControllerLocomotionTest(unittest.TestCase):
         self.assertFalse(controller_locomotion_enabled(False, "G1_29"))
         self.assertFalse(controller_locomotion_enabled(True, "H1_2"))
 
-    def test_center_and_directions(self):
-        scale = CONTROLLER_VELOCITY_SCALE
+    def test_center_directions_and_combinations(self):
+        translation = CONTROLLER_VELOCITY_SCALE
+        yaw = CONTROLLER_YAW_SCALE
         cases = (
             ((0, 0), (0, 0), (0, 0, 0)),
-            ((0, -1), (0, 0), (scale, 0, 0)),
-            ((0, 1), (0, 0), (-scale, 0, 0)),
-            ((-1, 0), (0, 0), (0, scale, 0)),
-            ((1, 0), (0, 0), (0, -scale, 0)),
-            ((0, 0), (-1, 0), (0, 0, scale)),
-            ((0, 0), (1, 0), (0, 0, -scale)),
+            ((0, 0), (0, -1), (translation, 0, 0)),
+            ((0, 0), (0, 1), (-translation, 0, 0)),
+            ((0, 0), (-1, 0), (0, translation, 0)),
+            ((0, 0), (1, 0), (0, -translation, 0)),
+            ((-1, 0), (0, 0), (0, 0, yaw)),
+            ((1, 0), (0, 0), (0, 0, -yaw)),
+            ((0, -1), (0, 0), (0, 0, 0)),
+            ((-1, 0), (0, -1), (translation, 0, yaw)),
+            ((1, 0), (-1, 0), (0, translation, -yaw)),
         )
         for left, right, expected in cases:
             with self.subTest(left=left, right=right):
                 self.assert_move(left, right, expected)
 
-    def test_stale_controller_commands_zero(self):
-        self.assert_move((1, -1), (1, 0), (0, 0, 0), now=10.5, updated_at=10.0)
-        self.assert_move((1, -1), (1, 0), (0, 0, 0), now=11.0, updated_at=10.0)
+    def test_controller_freshness_is_independent(self):
+        self.assert_move(
+            (-1, 0), (0, -1), (0.3, 0, 0), now=10.5,
+            left_updated_at=10.0, right_updated_at=10.4,
+        )
+        self.assert_move(
+            (-1, 0), (0, -1), (0, 0, 0.15), now=10.5,
+            left_updated_at=10.4, right_updated_at=10.0,
+        )
+        self.assert_move(
+            (-1, 0), (0, -1), (0, 0, 0), now=10.5,
+            left_updated_at=10.0, right_updated_at=10.0,
+        )
 
     def test_damping_does_not_move_in_same_iteration(self):
         client = FakeLocoClient()
@@ -83,17 +104,26 @@ class ControllerLocomotionTest(unittest.TestCase):
     def test_stale_thumbstick_press_does_not_damp(self):
         client = FakeLocoClient()
         apply_controller_locomotion(
-            tele_data((0, -1), (1, 0), left_pressed=True, right_pressed=True),
+            tele_data(
+                (-1, 0), (0, -1), left_updated_at=9.5,
+                left_pressed=True, right_pressed=True,
+            ),
             client,
-            now=10.5,
+            now=10.1,
         )
-        self.assertEqual(client.calls, [("Move", 0.0, 0.0, 0.0)])
+        self.assertEqual(client.calls, [("Move", 0.3, 0.0, 0.0)])
 
     def test_a_button_exit_requires_fresh_input(self):
         fresh = FakeLocoClient()
         stale = FakeLocoClient()
         self.assertTrue(apply_controller_locomotion(tele_data(a_button=True), fresh, now=10.1))
-        self.assertFalse(apply_controller_locomotion(tele_data(a_button=True), stale, now=10.5))
+        self.assertFalse(
+            apply_controller_locomotion(
+                tele_data(left_updated_at=10.0, right_updated_at=9.5, a_button=True),
+                stale,
+                now=10.1,
+            )
+        )
 
 
 if __name__ == "__main__":

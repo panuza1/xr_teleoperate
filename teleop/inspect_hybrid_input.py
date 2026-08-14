@@ -30,14 +30,16 @@ def main():
         while not args.duration or time.monotonic() - started < args.duration:
             data = tv.get_tele_data()
             now = time.monotonic()
-            age = now - data.controller_data_updated_at if data.controller_data_updated_at else float("inf")
+            left_age = now - data.left_controller_data_updated_at if data.left_controller_data_updated_at else float("inf")
+            right_age = now - data.right_controller_data_updated_at if data.right_controller_data_updated_at else float("inf")
             vx, vy, vyaw = controller_velocity(data, now)
             print(
                 f"HAND: {'active' if data.motion_data_ready else 'waiting'} | "
-                f"CONTROLLER: {'active' if controller_input_fresh(data, now) else 'waiting/stale'} | "
-                f"LEFT STICK: {data.left_ctrl_thumbstickValue} | "
+                f"RIGHT CONTROLLER: {'active' if controller_input_fresh(data, now, 'right') else 'waiting/stale'} | "
+                f"LEFT CONTROLLER: {'active' if controller_input_fresh(data, now, 'left') else 'waiting/stale'} | "
                 f"RIGHT STICK: {data.right_ctrl_thumbstickValue} | "
-                f"CONTROLLER AGE: {age:.3f}s | "
+                f"LEFT STICK: {data.left_ctrl_thumbstickValue} | "
+                f"RIGHT AGE: {right_age:.3f}s | LEFT AGE: {left_age:.3f}s | "
                 f"Move({vx:+.3f}, {vy:+.3f}, {vyaw:+.3f})",
                 flush=True,
             )
