@@ -20,6 +20,7 @@ from teleimager.image_client import ImageClient
 from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
+from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled
 from sshkeyboard import listen_keyboard, stop_listening
 
 # for simulation
@@ -99,6 +100,7 @@ if __name__ == '__main__':
     parser.add_argument('--task-steps', type = str, default = 'step1: do this; step2: do that;', help = 'task steps for recording at json file')
 
     args = parser.parse_args()
+    controller_locomotion = controller_locomotion_enabled(args.motion, args.arm)
     logger_mp.debug(f"args: {args}")
 
     try:
@@ -141,6 +143,7 @@ if __name__ == '__main__':
 
         # televuer_wrapper: obtain hand pose data from the XR device and transmit the robot's head camera image to the XR device.
         tv_wrapper = TeleVuerWrapper(use_hand_tracking=args.input_mode == "hand",
+                                     use_controller_input=args.input_mode == "controller" or controller_locomotion,
                                      binocular=camera_config['head_camera']['binocular'],
                                      img_shape=camera_config['head_camera']['image_shape'],
                                      # maybe should decrease fps for better performance?
@@ -155,7 +158,7 @@ if __name__ == '__main__':
         
         # motion mode (G1: Regular mode R1+X, not Running mode R2+A)
         if args.motion:
-            if args.input_mode == "controller":
+            if controller_locomotion:
                 loco_wrapper = LocoClientWrapper()
         else:
             if args.sim:
@@ -384,18 +387,10 @@ if __name__ == '__main__':
                 xr_motion_data_ready.value = tele_data.motion_data_ready
             
             # high level control
-            if args.input_mode == "controller" and args.motion:
-                # quit teleoperate
-                if tele_data.right_ctrl_aButton:
+            if controller_locomotion:
+                if apply_controller_locomotion(tele_data, loco_wrapper):
                     START = False
                     STOP = True
-                # command robot to enter damping mode. soft emergency stop function
-                if tele_data.left_ctrl_thumbstick and tele_data.right_ctrl_thumbstick:
-                    loco_wrapper.Damp()
-                # https://github.com/unitreerobotics/xr_teleoperate/issues/135, control, limit velocity to within 0.3
-                loco_wrapper.Move(-tele_data.left_ctrl_thumbstickValue[1] * 0.3,
-                                  -tele_data.left_ctrl_thumbstickValue[0] * 0.3,
-                                  -tele_data.right_ctrl_thumbstickValue[0]* 0.3)
 
             # get current robot state data.
             current_lr_arm_q  = arm_ctrl.get_current_dual_arm_q()
