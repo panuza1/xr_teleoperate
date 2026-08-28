@@ -41,7 +41,10 @@ class Inspire_Controller_DFX:
 
         self._wait_for_hand_state()
 
-        hand_control_process = Process(target=self.control_process, args=(left_hand_array, right_hand_array,  self.left_hand_state_array, self.right_hand_state_array,
+        # A forked child cannot reliably reuse CycloneDDS writers. Simulation
+        # stays in-process; preserve the existing real-robot process behavior.
+        worker = threading.Thread if self.simulation_mode else Process
+        hand_control_process = worker(target=self.control_process, args=(left_hand_array, right_hand_array,  self.left_hand_state_array, self.right_hand_state_array,
                                                                           dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, xr_motion_data_ready_in))
         hand_control_process.daemon = True
         hand_control_process.start()

@@ -84,7 +84,7 @@ if __name__ == '__main__':
     parser.add_argument('--img-server-ip', type=str, default='192.168.123.164', help='IP address of image server, used by teleimager and televuer')
     parser.add_argument('--image-transport', choices=['auto', 'webrtc', 'zmq'], default='auto',
                         help='Image transport to XR. Use zmq to bypass browser WebRTC attachment issues.')
-    parser.add_argument('--network-interface', type=str, default=None, help='Network interface for dds communication, e.g., eth0, wlan0. If None, use default interface.')
+    parser.add_argument('--network-interface', type=str, default=None, help='Network interface for DDS; defaults to lo with --sim and SDK default otherwise.')
     # mode flags
     parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')
     parser.add_argument('--headless', action='store_true', help='Enable headless mode (no display)')
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     try:
         # setup dds communication domains id
         if args.sim:
-            ChannelFactoryInitialize(1, networkInterface=args.network_interface)
+            ChannelFactoryInitialize(1, networkInterface=args.network_interface or "lo")
         else:
             ChannelFactoryInitialize(0, networkInterface=args.network_interface)
 
