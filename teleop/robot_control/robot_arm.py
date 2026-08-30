@@ -72,8 +72,39 @@ class DataBuffer:
         with self.lock:
             self.data = data
 
-class G1_29_ArmController:
+class _ArmControllerLifecycle:
+    def _init_lifecycle(self):
+        self._stop_event = threading.Event()
+        self.publish_thread = None
+        self.subscribe_thread = None
+
+    def stop(self, timeout=1.0):
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is None:
+            return True
+
+        stop_event.set()
+        deadline = time.monotonic() + timeout
+        current_thread = threading.current_thread()
+        threads = (
+            getattr(self, "publish_thread", None),
+            getattr(self, "subscribe_thread", None),
+        )
+        for thread in threads:
+            if thread is not None and thread is not current_thread and thread.is_alive():
+                thread.join(max(0.0, deadline - time.monotonic()))
+
+        stopped = all(thread is None or not thread.is_alive() for thread in threads)
+        if not stopped:
+            logger_mp.error(f"[{type(self).__name__}] controller threads did not stop within {timeout}s.")
+        return stopped
+
+    close = stop
+
+
+class G1_29_ArmController(_ArmControllerLifecycle):
     def __init__(self, motion_mode = False, simulation_mode = False):
+        self._init_lifecycle()
         logger_mp.info("Initialize G1_29_ArmController...")
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
@@ -159,7 +190,7 @@ class G1_29_ArmController:
         logger_mp.info("Initialize G1_29_ArmController OK!")
 
     def _subscribe_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
             if msg is not None:
                 lowstate = G1_29_LowState()
@@ -167,7 +198,7 @@ class G1_29_ArmController:
                     lowstate.motor_state[id].q  = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
-            time.sleep(0.002)
+            self._stop_event.wait(0.002)
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -180,7 +211,7 @@ class G1_29_ArmController:
         if self.motion_mode:
             self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = 1.0;
 
-        while True:
+        while not self._stop_event.is_set():
             start_time = time.time()
 
             with self.ctrl_lock:
@@ -207,7 +238,7 @@ class G1_29_ArmController:
             current_time = time.time()
             all_t_elapsed = current_time - start_time
             sleep_time = max(0, (self.control_dt - all_t_elapsed))
-            time.sleep(sleep_time)
+            self._stop_event.wait(sleep_time)
             # logger_mp.debug(f"arm_velocity_limit:{self.arm_velocity_limit}")
             # logger_mp.debug(f"sleep_time:{sleep_time}")
 
@@ -360,8 +391,9 @@ class G1_29_JointIndex(IntEnum):
     kNotUsedJoint4 = 33
     kNotUsedJoint5 = 34
 
-class G1_23_ArmController:
+class G1_23_ArmController(_ArmControllerLifecycle):
     def __init__(self, motion_mode = False, simulation_mode = False):
+        self._init_lifecycle()
         self.simulation_mode = simulation_mode
         self.motion_mode = motion_mode
 
@@ -444,7 +476,7 @@ class G1_23_ArmController:
         logger_mp.info("Initialize G1_23_ArmController OK!")
 
     def _subscribe_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
             if msg is not None:
                 lowstate = G1_23_LowState()
@@ -452,7 +484,7 @@ class G1_23_ArmController:
                     lowstate.motor_state[id].q  = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
-            time.sleep(0.002)
+            self._stop_event.wait(0.002)
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -465,7 +497,7 @@ class G1_23_ArmController:
         if self.motion_mode:
             self.msg.motor_cmd[G1_23_JointIndex.kNotUsedJoint0].q = 1.0;
 
-        while True:
+        while not self._stop_event.is_set():
             start_time = time.time()
 
             with self.ctrl_lock:
@@ -492,7 +524,7 @@ class G1_23_ArmController:
             current_time = time.time()
             all_t_elapsed = current_time - start_time
             sleep_time = max(0, (self.control_dt - all_t_elapsed))
-            time.sleep(sleep_time)
+            self._stop_event.wait(sleep_time)
             # logger_mp.debug(f"arm_velocity_limit:{self.arm_velocity_limit}")
             # logger_mp.debug(f"sleep_time:{sleep_time}")
 
@@ -635,8 +667,9 @@ class G1_23_JointIndex(IntEnum):
     kNotUsedJoint4 = 33
     kNotUsedJoint5 = 34
 
-class H1_2_ArmController:
+class H1_2_ArmController(_ArmControllerLifecycle):
     def __init__(self, motion_mode = False, simulation_mode = False):
+        self._init_lifecycle()
         self.simulation_mode = simulation_mode
         self.motion_mode = motion_mode
         
@@ -719,7 +752,7 @@ class H1_2_ArmController:
         logger_mp.info("Initialize H1_2_ArmController OK!")
 
     def _subscribe_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
             if msg is not None:
                 lowstate = H1_2_LowState()
@@ -727,7 +760,7 @@ class H1_2_ArmController:
                     lowstate.motor_state[id].q  = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
-            time.sleep(0.002)
+            self._stop_event.wait(0.002)
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -740,7 +773,7 @@ class H1_2_ArmController:
         if self.motion_mode:
             self.msg.motor_cmd[H1_2_JointIndex.kNotUsedJoint0].q = 1.0;
 
-        while True:
+        while not self._stop_event.is_set():
             start_time = time.time()
 
             with self.ctrl_lock:
@@ -767,7 +800,7 @@ class H1_2_ArmController:
             current_time = time.time()
             all_t_elapsed = current_time - start_time
             sleep_time = max(0, (self.control_dt - all_t_elapsed))
-            time.sleep(sleep_time)
+            self._stop_event.wait(sleep_time)
             # logger_mp.debug(f"arm_velocity_limit:{self.arm_velocity_limit}")
             # logger_mp.debug(f"sleep_time:{sleep_time}")
 
@@ -917,8 +950,9 @@ class H1_2_JointIndex(IntEnum):
     kNotUsedJoint6 = 33
     kNotUsedJoint7 = 34
 
-class H1_ArmController:
+class H1_ArmController(_ArmControllerLifecycle):
     def __init__(self, simulation_mode = False):
+        self._init_lifecycle()
         self.simulation_mode = simulation_mode
         
         logger_mp.info("Initialize H1_ArmController...")
@@ -988,7 +1022,7 @@ class H1_ArmController:
         logger_mp.info("Initialize H1_ArmController OK!")
 
     def _subscribe_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
             if msg is not None:
                 lowstate = H1_LowState()
@@ -996,7 +1030,7 @@ class H1_ArmController:
                     lowstate.motor_state[id].q  = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
-            time.sleep(0.002)
+            self._stop_event.wait(0.002)
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -1006,7 +1040,7 @@ class H1_ArmController:
         return cliped_arm_q_target
 
     def _ctrl_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             start_time = time.time()
 
             with self.ctrl_lock:
@@ -1033,7 +1067,7 @@ class H1_ArmController:
             current_time = time.time()
             all_t_elapsed = current_time - start_time
             sleep_time = max(0, (self.control_dt - all_t_elapsed))
-            time.sleep(sleep_time)
+            self._stop_event.wait(sleep_time)
             # logger_mp.debug(f"arm_velocity_limit:{self.arm_velocity_limit}")
             # logger_mp.debug(f"sleep_time:{sleep_time}")
 
@@ -1137,8 +1171,9 @@ class H1_JointIndex(IntEnum):
     kLeftShoulderYaw = 18
     kLeftElbow = 19
 
-class H2_ArmController:
+class H2_ArmController(_ArmControllerLifecycle):
     def __init__(self, motion_mode=False, simulation_mode=False):
+        self._init_lifecycle()
         logger_mp.info("Initialize H2_ArmController...")
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
@@ -1221,7 +1256,7 @@ class H2_ArmController:
         logger_mp.info("Initialize H2_ArmController OK!")
 
     def _subscribe_motor_state(self):
-        while True:
+        while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
             if msg is not None:
                 lowstate = H2_LowState()
@@ -1229,7 +1264,7 @@ class H2_ArmController:
                     lowstate.motor_state[id].q = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
-            time.sleep(0.002)
+            self._stop_event.wait(0.002)
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -1242,7 +1277,7 @@ class H2_ArmController:
         if self.motion_mode:
             self.msg.motor_cmd[H2_JointIndex.kNotUsedJoint0].q = 1.0
 
-        while True:
+        while not self._stop_event.is_set():
             start_time = time.time()
 
             with self.ctrl_lock:
@@ -1269,7 +1304,7 @@ class H2_ArmController:
             current_time = time.time()
             all_t_elapsed = current_time - start_time
             sleep_time = max(0, (self.control_dt - all_t_elapsed))
-            time.sleep(sleep_time)
+            self._stop_event.wait(sleep_time)
 
     def ctrl_dual_arm(self, q_target, tauff_target):
         """Set control target values q & tau of the left and right arm motors."""

@@ -6,7 +6,7 @@ import numpy as np
 from enum import IntEnum
 import threading
 import time
-from multiprocessing import Process, Array
+from multiprocessing import Process, Array, Event
 
 import logging_mp
 logger_mp = logging_mp.getLogger(__name__)
@@ -23,6 +23,8 @@ class Inspire_Controller_DFX:
         self.Unit_Test = Unit_Test
         self.simulation_mode = simulation_mode
         self._state_ready = threading.Event()
+        self._stop_event = Event()
+        self.hand_control_worker = None
         if not self.Unit_Test:
             self.hand_retargeting = HandRetargeting(HandType.INSPIRE_HAND)
         else:
@@ -44,10 +46,10 @@ class Inspire_Controller_DFX:
         # A forked child cannot reliably reuse CycloneDDS writers. Simulation
         # stays in-process; preserve the existing real-robot process behavior.
         worker = threading.Thread if self.simulation_mode else Process
-        hand_control_process = worker(target=self.control_process, args=(left_hand_array, right_hand_array,  self.left_hand_state_array, self.right_hand_state_array,
-                                                                          dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, xr_motion_data_ready_in))
-        hand_control_process.daemon = True
-        hand_control_process.start()
+        self.hand_control_worker = worker(target=self.control_process, args=(left_hand_array, right_hand_array,  self.left_hand_state_array, self.right_hand_state_array,
+                                                                          dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, xr_motion_data_ready_in, self._stop_event))
+        self.hand_control_worker.daemon = True
+        self.hand_control_worker.start()
 
         logger_mp.info("Initialize Inspire_Controller_DFX OK!")
 
@@ -85,8 +87,8 @@ class Inspire_Controller_DFX:
         # logger_mp.debug("hand ctrl publish ok.")
     
     def control_process(self, left_hand_array, right_hand_array, left_hand_state_array, right_hand_state_array,
-                              dual_hand_data_lock = None, dual_hand_state_array = None, dual_hand_action_array = None, xr_motion_data_ready_in = None):
-        self.running = True
+                              dual_hand_data_lock = None, dual_hand_state_array = None, dual_hand_action_array = None, xr_motion_data_ready_in = None,
+                              stop_event = None):
 
         left_q_target  = np.full(Inspire_Num_Motors, 1.0)
         right_q_target = np.full(Inspire_Num_Motors, 1.0)
@@ -101,7 +103,7 @@ class Inspire_Controller_DFX:
             self.hand_msg.cmds[id].q = 1.0
 
         try:
-            while self.running:
+            while stop_event is None or not stop_event.is_set():
                 start_time = time.time()
                 # get dual hand state
                 with left_hand_array.get_lock():
@@ -156,9 +158,27 @@ class Inspire_Controller_DFX:
                 current_time = time.time()
                 time_elapsed = current_time - start_time
                 sleep_time = max(0, (1 / self.fps) - time_elapsed)
-                time.sleep(sleep_time)
+                if stop_event is None:
+                    time.sleep(sleep_time)
+                else:
+                    stop_event.wait(sleep_time)
         finally:
             logger_mp.info("Inspire_Controller_DFX has been closed.")
+
+    def stop(self, timeout=1.0):
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is None:
+            return True
+        stop_event.set()
+        worker = getattr(self, "hand_control_worker", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout)
+        stopped = worker is None or not worker.is_alive()
+        if not stopped:
+            logger_mp.error(f"[Inspire_Controller_DFX] worker did not stop within {timeout}s.")
+        return stopped
+
+    close = stop
 
 
 

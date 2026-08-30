@@ -213,7 +213,12 @@ def _load_controller_module(name, source, filename):
     module.__file__ = str(filename)
     with patch.dict(sys.modules, _module_stubs()):
         exec(compile(source, str(filename), "exec"), module.__dict__)
-    module.threading = types.SimpleNamespace(Lock=threading.Lock, Thread=_FakeThread)
+    module.threading = types.SimpleNamespace(
+        Event=threading.Event,
+        Lock=threading.Lock,
+        Thread=_FakeThread,
+        current_thread=threading.current_thread,
+    )
     return module
 
 
@@ -270,19 +275,19 @@ class ArmOnlyMessageEquivalenceTests(unittest.TestCase):
             f"{BASELINE_COMMIT}:teleop/robot_control/robot_arm.py",
         )
 
-    def test_g1_controller_structure_matches_known_working_baseline(self):
-        def controller_ast(source):
+    def test_g1_joint_layout_matches_known_working_baseline(self):
+        def joint_layout_ast(source):
             tree = ast.parse(source)
             return next(
                 node
                 for node in tree.body
                 if isinstance(node, ast.ClassDef)
-                and node.name == "G1_29_ArmController"
+                and node.name == "G1_29_JointIndex"
             )
 
         self.assertEqual(
-            ast.dump(controller_ast(self.baseline_source), include_attributes=False),
-            ast.dump(controller_ast(self.current_source), include_attributes=False),
+            ast.dump(joint_layout_ast(self.baseline_source), include_attributes=False),
+            ast.dump(joint_layout_ast(self.current_source), include_attributes=False),
         )
 
     def test_paused_body_tracking_flags_are_absent_from_entrypoint(self):

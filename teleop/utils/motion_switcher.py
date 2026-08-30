@@ -12,22 +12,38 @@ class MotionSwitcher:
         self.msc.SetTimeout(1.0)
         self.msc.Init()
 
-    def Enter_Debug_Mode(self):
+    def Enter_Debug_Mode(self, max_attempts=10, retry_interval_s=1.0):
         try:
-            status, result = self.msc.CheckMode()
-            while result['name']:
-                self.msc.ReleaseMode()
+            for attempt in range(max_attempts + 1):
                 status, result = self.msc.CheckMode()
-                time.sleep(1)
-            return status, result
-        except Exception as e:
+                if status != 0 or not isinstance(result, dict):
+                    return status, result
+                if not result.get('name'):
+                    return status, result
+                if attempt == max_attempts:
+                    return None, result
+                status, _ = self.msc.ReleaseMode()
+                if status != 0:
+                    return status, result
+                time.sleep(retry_interval_s)
+        except Exception:
             return None, None
     
-    def Exit_Debug_Mode(self):
+    def Exit_Debug_Mode(self, target_mode='ai', timeout_s=5.0, poll_interval_s=0.2):
         try:
-            status, result = self.msc.SelectMode(nameOrAlias='ai')
-            return status, result
-        except Exception as e:
+            status, result = self.msc.SelectMode(nameOrAlias=target_mode)
+            if status != 0:
+                return status, result
+
+            deadline = time.monotonic() + timeout_s
+            while True:
+                status, result = self.msc.CheckMode()
+                if status == 0 and result and result.get('name') == target_mode:
+                    return status, result
+                if time.monotonic() >= deadline:
+                    return (status if status != 0 else None), result
+                time.sleep(min(poll_interval_s, max(0.0, deadline - time.monotonic())))
+        except Exception:
             return None, None
 
 class LocoClientWrapper:

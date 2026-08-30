@@ -72,6 +72,23 @@ def get_state() -> dict:
         "RECORD_RUNNING": RECORD_RUNNING,
     }
 
+
+def _restore_g1_mode(motion_switcher, arm, motion_mode, simulation_mode,
+                     debug_mode_was_entered, arm_stopped):
+    if arm not in ("G1_29", "G1_23") or motion_mode or simulation_mode or not debug_mode_was_entered:
+        return False
+    if not arm_stopped:
+        logger_mp.error("Skipping G1 mode restoration because arm controller threads are still running.")
+        return False
+
+    status, result = motion_switcher.Exit_Debug_Mode()
+    if status == 0 and result and result.get("name") == "ai":
+        logger_mp.info("Restore G1 mode: Success (verified mode: ai)")
+        return True
+
+    logger_mp.error(f"Restore G1 mode: Failed (status={status}, result={result})")
+    return False
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # basic control parameters
@@ -102,6 +119,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     controller_locomotion = controller_locomotion_enabled(args.motion, args.arm)
     logger_mp.debug(f"args: {args}")
+
+    arm_ctrl = ipc_server = listen_keyboard_thread = None
+    img_client = tv_wrapper = sim_state_subscriber = recorder = None
+    motion_switcher = ee_ctrl = None
+    debug_mode_was_entered = False
 
     try:
         # setup dds communication domains id
@@ -166,7 +188,16 @@ if __name__ == '__main__':
             else:
                 motion_switcher = MotionSwitcher()
                 status, result = motion_switcher.Enter_Debug_Mode()
-                logger_mp.info(f"Enter debug mode: {'Success' if status == 0 else 'Failed'}")
+                debug_mode_was_entered = (
+                    status == 0 and result is not None and not result.get("name")
+                )
+                if debug_mode_was_entered:
+                    logger_mp.info("Enter debug mode: Success")
+                else:
+                    raise RuntimeError(
+                        f"Enter debug mode failed (status={status}, result={result}); "
+                        "aborting before low-level arm control starts."
+                    )
 
         # arm
         if args.arm == "G1_29":
@@ -196,7 +227,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 14, lock=False)
             dual_hand_action_array = Array('d', 14, lock=False)
-            hand_ctrl = Dex3_Controller_Button_Controller(
+            ee_ctrl = Dex3_Controller_Button_Controller(
                 left_dex3_trigger_value,
                 right_dex3_trigger_value,
                 dual_hand_data_lock,
@@ -212,7 +243,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 14, lock = False)   # [output] current left, right hand state(14) data.
             dual_hand_action_array = Array('d', 14, lock = False)  # [output] current left, right hand action(14) data.
-            hand_ctrl = Dex3_1_Controller(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, 
+            ee_ctrl = Dex3_1_Controller(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock,
                                           dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         elif args.ee == "dex1":
             from teleop.robot_control.robot_hand_unitree import Dex1_1_Gripper_Controller
@@ -221,7 +252,7 @@ if __name__ == '__main__':
             dual_gripper_data_lock = Lock()
             dual_gripper_state_array = Array('d', 2, lock=False)   # current left, right gripper state(2) data.
             dual_gripper_action_array = Array('d', 2, lock=False)  # current left, right gripper action(2) data.
-            gripper_ctrl = Dex1_1_Gripper_Controller(left_gripper_value, right_gripper_value, dual_gripper_data_lock, 
+            ee_ctrl = Dex1_1_Gripper_Controller(left_gripper_value, right_gripper_value, dual_gripper_data_lock,
                                                      dual_gripper_state_array, dual_gripper_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         elif args.ee == "inspire_dfx":
             from teleop.robot_control.robot_hand_inspire import Inspire_Controller_DFX
@@ -230,7 +261,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
-            hand_ctrl = Inspire_Controller_DFX(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
+            ee_ctrl = Inspire_Controller_DFX(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         elif args.ee == "inspire_ftp":
             from teleop.robot_control.robot_hand_inspire import Inspire_Controller_FTP
             left_hand_pos_array = Array('d', 75, lock = True)      # [input]
@@ -238,7 +269,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
-            hand_ctrl = Inspire_Controller_FTP(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
+            ee_ctrl = Inspire_Controller_FTP(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         elif args.ee == "brainco" and args.input_mode == "hand":
             from teleop.robot_control.robot_hand_brainco import Brainco_Controller_hand
             left_hand_pos_array = Array('d', 75, lock = True)      # [input]
@@ -246,7 +277,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
-            hand_ctrl = Brainco_Controller_hand(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, 
+            ee_ctrl = Brainco_Controller_hand(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock,
                                                 dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         elif args.ee == "brainco" and args.input_mode == "controller":
             from teleop.robot_control.robot_hand_brainco import Brainco_Controller_ctrl
@@ -257,7 +288,7 @@ if __name__ == '__main__':
             dual_hand_data_lock = Lock()
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
-            hand_ctrl = Brainco_Controller_ctrl(left_gripper_trigger_in, left_gripper_squeeze_in, right_gripper_trigger_in, right_gripper_squeeze_in,
+            ee_ctrl = Brainco_Controller_ctrl(left_gripper_trigger_in, left_gripper_squeeze_in, right_gripper_trigger_in, right_gripper_squeeze_in,
                                                 dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         else:
             pass
@@ -562,17 +593,50 @@ if __name__ == '__main__':
         import traceback
         logger_mp.error(traceback.format_exc())
     finally:
+        STOP = True
+        arm_stopped = arm_ctrl is None
         try:
-            arm_ctrl.ctrl_dual_arm_go_home()
+            if arm_ctrl is not None:
+                arm_ctrl.ctrl_dual_arm_go_home()
         except Exception as e:
             logger_mp.error(f"Failed to ctrl_dual_arm_go_home: {e}")
+
+        try:
+            if arm_ctrl is not None:
+                arm_stopped = arm_ctrl.stop()
+                if not arm_stopped:
+                    logger_mp.error("Failed to stop arm controller threads.")
+        except Exception as e:
+            arm_stopped = False
+            logger_mp.error(f"Failed to stop arm controller: {e}")
+
+        try:
+            stop_ee = getattr(ee_ctrl, "stop", None)
+            if stop_ee is not None and not stop_ee():
+                logger_mp.error("Failed to stop end-effector controller.")
+        except Exception as e:
+            logger_mp.error(f"Failed to stop end-effector controller: {e}")
+
+        try:
+            _restore_g1_mode(
+                motion_switcher,
+                args.arm,
+                args.motion,
+                args.sim,
+                debug_mode_was_entered,
+                arm_stopped,
+            )
+        except Exception as e:
+            logger_mp.error(f"Failed to restore G1 mode: {e}")
         
         try:
-            if args.ipc:
+            if ipc_server is not None:
                 ipc_server.stop()
-            else:
+            elif listen_keyboard_thread is not None:
                 stop_listening()
-                listen_keyboard_thread.join()
+                listen_keyboard_thread.join(timeout=1.0)
+                if listen_keyboard_thread.is_alive():
+                    logger_mp.error("Keyboard listener thread did not stop within 1.0s.")
         except Exception as e:
             logger_mp.error(f"Failed to stop keyboard listener or ipc server: {e}")
         
@@ -583,26 +647,19 @@ if __name__ == '__main__':
             logger_mp.error(f"Failed to close image client: {e}")
 
         try:
-            tv_wrapper.close()
+            if tv_wrapper is not None:
+                tv_wrapper.close()
         except Exception as e:
             logger_mp.error(f"Failed to close televuer wrapper: {e}")
 
         try:
-            if not args.motion:
-                pass
-                # status, result = motion_switcher.Exit_Debug_Mode()
-                # logger_mp.info(f"Exit debug mode: {'Success' if status == 3104 else 'Failed'}")
-        except Exception as e:
-            logger_mp.error(f"Failed to exit debug mode: {e}")
-
-        try:
-            if args.sim:
+            if sim_state_subscriber is not None:
                 sim_state_subscriber.stop_subscribe()
         except Exception as e:
             logger_mp.error(f"Failed to stop sim state subscriber: {e}")
         
         try:
-            if args.record:
+            if recorder is not None:
                 recorder.close()
         except Exception as e:
             logger_mp.error(f"Failed to close recorder: {e}")
