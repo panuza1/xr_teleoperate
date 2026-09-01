@@ -103,7 +103,7 @@ if __name__ == '__main__':
                         help='Image transport to XR. Use zmq to bypass browser WebRTC attachment issues.')
     parser.add_argument('--network-interface', type=str, default=None, help='Network interface for DDS; defaults to lo with --sim and SDK default otherwise.')
     # mode flags
-    parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')
+    parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')   
     parser.add_argument('--headless', action='store_true', help='Enable headless mode (no display)')
     parser.add_argument('--sim', action = 'store_true', help = 'Enable isaac simulation mode')
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>xr_teleop — control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eef1f3;--panel:#ffffff;--panel-raised:#f6f8f9;--border:#d9dfe4;--border-soft:#e4e9ec;
+  --text:#161a1e;--muted:#616b75;--muted-dim:#838d96;--accent:#0e9488;--accent-dim:#bfe6e1;
+  --accent-bg:#e2f5f2;--danger:#c9433f;--danger-bg:#fbeaea;--term-bg:#07090b;--term-text:#a9d8d3;
+  --shadow:0 1px 2px rgba(20,26,32,.04);--mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --sans:'Inter',ui-sans-serif,system-ui,sans-serif;
+}
+html[data-theme="mono"]{
+  --bg:#f2f2f2;--panel:#ffffff;--panel-raised:#f7f7f7;--border:#cfcfcf;--border-soft:#dedede;
+  --text:#111111;--muted:#555555;--muted-dim:#7a7a7a;--accent:#111111;--accent-dim:#c7c7c7;
+  --accent-bg:#e8e8e8;--danger:#111111;--danger-bg:#ededed;--term-bg:#0b0b0b;--term-text:#f1f1f1;
+  --shadow:none;
+}
+html[data-theme="dark"]{
+  --bg:#0d1116;--panel:#131920;--panel-raised:#171e26;--border:#2a333d;--border-soft:#232b34;
+  --text:#edf2f6;--muted:#a2adb8;--muted-dim:#6f7a85;--accent:#56d6c8;--accent-dim:#235e58;
+  --accent-bg:#132d2a;--danger:#ff7d77;--danger-bg:#2d1718;--term-bg:#07090b;--term-text:#a9d8d3;
+  --shadow:none;
+}
+*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;transition:background .15s,color .15s}
+.shell{display:grid;grid-template-columns:210px 1fr 380px;min-height:100vh}
+.rail{border-right:1px solid var(--border-soft);padding:22px 16px;display:flex;flex-direction:column}
+.mark{font-family:var(--mono);font-weight:700;font-size:14px;letter-spacing:-.02em;color:var(--text);margin-bottom:2px}
+.mark .dim{color:var(--muted-dim)}.mark-sub{font-family:var(--mono);font-size:11px;color:var(--muted-dim);margin-bottom:28px}
+.nav{display:flex;flex-direction:column;gap:1px}
+.nav a{font-family:var(--mono);font-size:12.5px;color:var(--muted);text-decoration:none;padding:8px 10px;border-radius:5px;border-left:2px solid transparent;cursor:pointer}
+.nav a.active{color:var(--accent);background:var(--accent-bg);border-left-color:var(--accent)}
+.nav a:hover:not(.active){color:var(--text);background:var(--panel-raised)}
+.rail-foot{margin-top:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted-dim);padding-top:16px;border-top:1px solid var(--border-soft)}
+.config{padding:28px 32px 40px;max-width:640px;border-right:1px solid var(--border-soft)}
+.hdr{margin-bottom:26px}.hdr-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.hdr h1{font-size:19px;margin:0 0 5px;font-weight:600;letter-spacing:-.01em}.hdr p{margin:0;color:var(--muted);font-size:13px}
+.theme-control{display:flex;gap:4px;background:var(--panel);border:1px solid var(--border);padding:3px;border-radius:7px}
+.theme-btn{border:0;background:transparent;color:var(--muted);font:11px var(--mono);padding:6px 8px;border-radius:4px;cursor:pointer}
+.theme-btn.active{background:var(--accent-bg);color:var(--accent)}
+.block{padding:20px 0;border-top:1px solid var(--border-soft)}.block:first-of-type{border-top:0;padding-top:0}
+.block-label{font-family:var(--mono);font-size:11px;color:var(--muted-dim);margin-bottom:14px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+input,select{width:100%;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:9px 10px;font-family:var(--mono);font-size:12.5px;outline:none;appearance:none}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23616b75' stroke-width='1.4' fill='none'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:28px}
+input:focus,select:focus{border-color:var(--accent)}input::placeholder{color:var(--muted-dim)}
+.toggle-line{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:2px 0}
+.toggle-line .t-label{font-size:13px;color:var(--text)}.toggle-line .t-sub{font-size:11.5px;color:var(--muted-dim);margin-top:2px}
+.switch{width:34px;height:19px;border-radius:10px;background:var(--panel);border:1px solid var(--border);position:relative;flex-shrink:0}
+.switch:after{content:"";position:absolute;width:13px;height:13px;background:var(--muted);border-radius:50%;left:2px;top:2px;transition:.15s ease}
+.switch.on{background:var(--accent-bg);border-color:var(--accent-dim)}.switch.on:after{left:17px;background:var(--accent)}
+.advanced-body{margin-top:14px;display:none}.advanced-body.open{display:block}
+.preset-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.chip{font-family:var(--mono);font-size:11.5px;background:var(--panel);border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:7px 11px;cursor:pointer}
+.chip:hover{border-color:var(--muted);color:var(--text)}
+.side{padding:28px 24px 40px;display:flex;flex-direction:column;gap:18px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+.panel-hd{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border-soft);font-family:var(--mono);font-size:11px;color:var(--muted-dim)}
+.panel-hd .live{display:flex;align-items:center;gap:6px;color:var(--muted)}.pulse{width:6px;height:6px;border-radius:50%;background:var(--muted-dim)}
+.pulse.on{background:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.status-list{padding:4px 0}.status-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;font-size:12.5px;border-bottom:1px solid var(--border-soft)}
+.status-row:last-child{border-bottom:0}.status-row .k{color:var(--muted)}.status-row .v{font-family:var(--mono);font-size:11.5px}.v.idle{color:var(--muted-dim)}.v.good{color:var(--accent)}.v.bad{color:var(--danger)}
+.term{background:var(--term-bg);font-family:var(--mono);font-size:12px;line-height:1.65;padding:14px;min-height:170px;color:var(--term-text);white-space:pre-wrap;word-break:break-word}
+.term .flash{background:color-mix(in srgb,var(--accent) 16%,transparent);border-radius:3px}
+.term .cursor{display:inline-block;width:6px;height:12px;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite}@keyframes blink{50%{opacity:0}}
+.term-actions{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border-soft)}
+.btn{font-family:var(--mono);font-size:12px;font-weight:600;border-radius:6px;padding:9px 13px;cursor:pointer;border:1px solid transparent;flex:1}
+.btn.primary{background:var(--accent);color:var(--bg)}.btn.ghost{background:transparent;border-color:var(--border);color:var(--muted)}.btn.stop{background:var(--danger-bg);color:var(--danger);border-color:var(--border)}
+.note{font-size:11.5px;color:var(--muted-dim);padding:0 2px}
+@media(max-width:1100px){.shell{grid-template-columns:1fr}.rail{display:none}.config{border-right:0;max-width:none}.side{padding-top:0}}
+@media(max-width:620px){.row2{grid-template-columns:1fr}.config,.side{padding-left:16px;padding-right:16px}.hdr-top{flex-direction:column}.theme-control{align-self:flex-start}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="mark">xr<span class="dim">_</span>teleop</div>
+    <div class="mark-sub">g1 · quest 3</div>
+    <nav class="nav">
+      <a class="active">config</a><a>camera</a><a>robot</a><a>recordings</a><a>diagnostics</a>
+    </nav>
+    <div class="rail-foot">local control ui<br>lan · not connected</div>
+  </aside>
+
+  <section class="config">
+    <div class="hdr">
+      <div class="hdr-top">
+        <div>
+          <h1>Session configuration</h1>
+          <p>Set the parameters for this teleop run. The command on the right updates as you go.</p>
+        </div>
+        <div class="theme-control" aria-label="Theme">
+          <button class="theme-btn active" data-theme="light">light</button>
+          <button class="theme-btn" data-theme="mono">b&w</button>
+          <button class="theme-btn" data-theme="dark">dark</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-label">robot / end effector</div>
+      <div class="row2">
+        <div class="field"><label>Arm</label><select id="arm"><option>G1_29</option><option>G1_23</option><option>H1_2</option></select></div>
+        <div class="field"><label>End effector</label><select id="ee"><option value="inspire_dfx">Inspire DFX</option><option value="dex3">Dex3</option><option value="none">None</option></select></div>
+        <div class="field"><label>Input mode</label><select id="input"><option value="hand">Hand tracking</option><option value="controller">Controller</option></select></div>
+        <div class="field"><label>Body tracking</label><select id="body"><option value="upper">Upper body</option><option value="hand">Hands only</option><option value="full">Full body</option></select></div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-label">vision / streaming</div>
+      <div class="row2">
+        <div class="field"><label>Image server IP</label><input id="ip" value="192.168.123.164"></div>
+        <div class="field"><label>Image transport</label><select id="transport"><option value="zmq">ZMQ</option><option value="webrtc">WebRTC</option></select></div>
+        <div class="field"><label>Display mode</label><select id="display"><option value="ego">Ego</option><option value="immersive">Immersive</option></select></div>
+        <div class="field"><label>XR websocket port</label><input id="port" type="number" value="8012"></div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="toggle-line" id="advRow">
+        <div><div class="t-label">Advanced parameters</div><div class="t-sub">Network interface, recording path, raw CLI flags</div></div>
+        <div class="switch" id="advSwitch"></div>
+      </div>
+      <div class="advanced-body" id="advBody">
+        <div class="row2">
+          <div class="field"><label>Network interface</label><input id="network" placeholder="enp3s0 / lo"></div>
+          <div class="field"><label>Record output</label><input id="record" placeholder="./recordings/demo.pkl"></div>
+          <div class="field"><label>Config profile</label><input id="profile" placeholder="optional"></div>
+          <div class="field"><label>Extra CLI args</label><input id="extra" placeholder="--foo bar --debug"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-label">presets</div>
+      <div class="preset-row">
+        <button class="chip" data-preset="g1">g1 + inspire</button><button class="chip" data-preset="hand">hands only</button><button class="chip" data-preset="zmq">zmq camera</button><button class="chip" data-preset="webrtc">webrtc camera</button>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="panel">
+      <div class="panel-hd"><span>system status</span><span class="live"><span class="pulse" id="statusPulse"></span>not checked</span></div>
+      <div class="status-list">
+        <div class="status-row"><span class="k">XR server</span><span class="v idle">idle</span></div>
+        <div class="status-row"><span class="k">Image server</span><span class="v idle">idle</span></div>
+        <div class="status-row"><span class="k">G1 DDS</span><span class="v idle">idle</span></div>
+        <div class="status-row"><span class="k">Inspire DFX</span><span class="v idle">idle</span></div>
+        <div class="status-row"><span class="k">Teleop process</span><span class="v idle" id="s-proc">stopped</span></div>
+      </div>
+    </div>
+
+    <div class="panel" style="flex:1;display:flex;flex-direction:column">
+      <div class="panel-hd"><span>generated command</span><span id="cmdHint">edit fields to update</span></div>
+      <div class="term" id="cmd"></div>
+      <div class="term-actions"><button class="btn primary" id="btnStart">start</button><button class="btn ghost" id="btnCopy">copy</button><button class="btn stop" id="btnStop">stop</button></div>
+    </div>
+    <div class="note">Prototype UI. Backend wiring should preserve the existing xr_teleoperate behavior and parameters.</div>
+  </aside>
+</div>
+
+<script>
+const ids=["arm","ee","input","body","ip","transport","display","port","network","extra","record","profile"];
+const $=id=>document.getElementById(id), val=id=>$(id).value.trim();
+
+function setTheme(theme){
+  document.documentElement.dataset.theme=theme;
+  localStorage.setItem("xrTeleopTheme",theme);
+  document.querySelectorAll(".theme-btn").forEach(b=>b.classList.toggle("active",b.dataset.theme===theme));
+}
+document.querySelectorAll(".theme-btn").forEach(b=>b.addEventListener("click",()=>setTheme(b.dataset.theme)));
+setTheme(localStorage.getItem("xrTeleopTheme")||"light");
+
+function buildCommand(changedId){
+  const lines=[
+    {t:"python teleop_hand_and_arm.py",id:null},
+    {t:`  --arm ${val("arm")}`,id:"arm"},
+    {t:`  --ee ${val("ee")}`,id:"ee"},
+    {t:`  --input-mode ${val("input")}`,id:"input"},
+    {t:`  --body-tracking ${val("body")}`,id:"body"},
+    {t:`  --display-mode ${val("display")}`,id:"display"},
+    {t:`  --img-server-ip ${val("ip")}`,id:"ip"},
+    {t:`  --image-transport ${val("transport")}`,id:"transport"}
+  ];
+  if(val("network")) lines.push({t:`  --network-interface ${val("network")}`,id:"network"});
+  if(val("record")) lines.push({t:`  --record ${val("record")}`,id:"record"});
+  if(val("profile")) lines.push({t:`  --profile ${val("profile")}`,id:"profile"});
+  if(val("extra")) lines.push({t:`  ${val("extra")}`,id:"extra"});
+  const el=$("cmd"); el.innerHTML="";
+  lines.forEach((ln,i)=>{const s=document.createElement("span");s.textContent=ln.t+(i<lines.length-1?" \\\n":"");if(ln.id===changedId)s.classList.add("flash");el.appendChild(s)});
+  const c=document.createElement("span");c.className="cursor";el.appendChild(c);
+  if(changedId)setTimeout(()=>el.querySelector(".flash")?.classList.remove("flash"),500);
+}
+ids.forEach(id=>{ $(id).addEventListener("input",()=>buildCommand(id)); $(id).addEventListener("change",()=>buildCommand(id)); });
+$("advRow").addEventListener("click",()=>{$("advSwitch").classList.toggle("on");$("advBody").classList.toggle("open")});
+document.querySelectorAll(".chip").forEach(btn=>btn.addEventListener("click",()=>{
+  const t=btn.dataset.preset;
+  if(t==="g1"){arm.value="G1_29";ee.value="inspire_dfx";input.value="hand";body.value="upper"}
+  if(t==="hand"){input.value="hand";body.value="hand"}
+  if(t==="zmq")transport.value="zmq";
+  if(t==="webrtc")transport.value="webrtc";
+  buildCommand(null);
+}));
+$("btnCopy").addEventListener("click",async()=>{await navigator.clipboard.writeText($("cmd").textContent);const h=$("cmdHint"),p=h.textContent;h.textContent="copied";setTimeout(()=>h.textContent=p,1200)});
+$("btnStart").addEventListener("click",()=>{$("s-proc").textContent="running";$("s-proc").className="v good";$("statusPulse").classList.add("on")});
+$("btnStop").addEventListener("click",()=>{$("s-proc").textContent="stopped";$("s-proc").className="v idle";$("statusPulse").classList.remove("on")});
+buildCommand(null);
+</script>
+</body>
+</html>

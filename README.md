@@ -207,3 +207,21 @@ python teleop/inspect_hybrid_input.py --frequency 10
 ```
 
 Verify that both controllers become active, centered sticks produce `Move(0, 0, 0)`, and stale input returns the affected axes to zero before running the physical motion-mode command.
+
+## XR Teleop Web UI
+
+From the repository root, start the local UI and open
+`http://127.0.0.1:8080`:
+
+```bash
+python web_ui.py
+```
+
+The `light | b&w | dark` selector and last configuration are stored in browser
+localStorage. The generated command is the exact argument list used by
+`start`; `stop` sends the managed teleop process through its existing cleanup
+path. The resizable xterm.js diagnostics terminal receives the process PTY over
+a WebSocket, preserves ANSI/Unicode output, shows its exit status, and forwards
+keys only while that terminal has focus. This lets the existing CLI handle
+runtime keys such as `r` and `q` unchanged. Terminal output can be copied or
+cleared without affecting the process.

@@ -6,4 +6,4 @@
 	url = https://github.com/silencht/dex-retargeting
 [submodule "teleop/teleimager"]
 	path = teleop/teleimager
-	url = https://github.com/panuza1/teleimager.git
+	url = https://github.com/panuza1/teleimager.git      
