@@ -39,74 +39,20 @@
       </div>
     </header>
 
-    <section class="block" id="robot">
-      <div class="block-label">robot / end effector</div>
-      <div class="row2">
-        <div class="field"><label for="arm">Arm</label><select id="arm"><option>G1_29</option><option>G1_23</option><option>H1_2</option><option>H1</option><option>H2</option></select></div>
-        <div class="field"><label for="ee">End effector</label><select id="ee"><option value="">None</option><option value="inspire_dfx">Inspire DFX</option><option value="inspire_ftp">Inspire FTP</option><option value="dex3">Dex3</option><option value="dex1">Dex1</option><option value="brainco">BrainCo</option></select></div>
-        <div class="field"><label for="input_mode">Input mode</label><select id="input_mode"><option value="hand">Hand tracking</option><option value="controller">Controller</option></select></div>
-        <div class="field"><label for="display_mode">Display mode</label><select id="display_mode"><option value="immersive">Immersive</option><option value="ego">Ego</option><option value="pass-through">Pass-through</option></select></div>
+    <section class="block parameter-toolbar" aria-label="Parameter view">
+      <div class="parameter-tabs" role="tablist">
+        <button class="mode-btn active" type="button" role="tab" aria-selected="true" data-mode="basic">basic</button>
+        <button class="mode-btn" type="button" role="tab" aria-selected="false" data-mode="advanced">advanced</button>
+        <button class="mode-btn" type="button" role="tab" aria-selected="false" data-mode="all">all parameters</button>
       </div>
-      <label class="toggle-line main-toggle" for="motion">
-        <span><span class="t-label">Motion</span><span class="t-sub">Enable the existing high-level G1 motion-control path</span></span>
-        <input class="toggle-input" id="motion" type="checkbox" checked><span class="switch" aria-hidden="true"></span>
-      </label>
+      <button class="chip reset-all" id="resetAll" type="button">reset all to CLI defaults</button>
     </section>
 
-    <section class="block" id="camera">
-      <div class="block-label">vision / streaming</div>
-      <div class="row2">
-        <div class="field"><label for="img_server_ip">Image server IP</label><input id="img_server_ip" value="192.168.123.164" inputmode="decimal"></div>
-        <div class="field"><label for="image_transport">Image transport</label><select id="image_transport"><option value="zmq">ZMQ</option><option value="webrtc">WebRTC</option><option value="auto">Auto</option></select></div>
-      </div>
-    </section>
+    <div id="parameterSections" aria-live="polite"></div>
 
     <section class="block">
-      <button class="toggle-line advanced-toggle" id="advRow" type="button" aria-expanded="false" aria-controls="advBody">
-        <span><span class="t-label">Advanced parameters</span><span class="t-sub">Frequency, network, runtime modes, raw CLI flags</span></span>
-        <span class="switch" id="advSwitch" aria-hidden="true"></span>
-      </button>
-      <div class="advanced-body" id="advBody">
-        <div class="row2">
-          <div class="field"><label for="frequency">Frequency (Hz)</label><input id="frequency" type="number" min="1" max="240" step="0.1" value="30"></div>
-          <div class="field"><label for="network_interface">Network interface</label><input id="network_interface" placeholder="enp3s0 / lo"></div>
-        </div>
-        <div class="toggle-grid">
-          <label class="toggle-line" for="headless"><span><span class="t-label">Headless</span><span class="t-sub">Disable local display</span></span><input class="toggle-input" id="headless" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-          <label class="toggle-line" for="sim"><span><span class="t-label">Simulation</span><span class="t-sub">Use simulation DDS domain</span></span><input class="toggle-input" id="sim" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-          <label class="toggle-line" for="ipc"><span><span class="t-label">IPC input</span><span class="t-sub">Use IPC instead of keyboard</span></span><input class="toggle-input" id="ipc" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-          <label class="toggle-line" for="affinity"><span><span class="t-label">CPU affinity</span><span class="t-sub">Enable priority tuning</span></span><input class="toggle-input" id="affinity" type="checkbox"><span class="switch" aria-hidden="true"></span></label>
-        </div>
-        <div class="field extra-field"><label for="extra_args">Extra CLI args</label><input id="extra_args" placeholder="future/debug flags only"></div>
-      </div>
-    </section>
-
-    <section class="block" id="recordings">
-      <div class="block-label">recording</div>
-      <label class="toggle-line" for="record">
-        <span><span class="t-label">Record session</span><span class="t-sub">Enable the existing episode writer</span></span>
-        <input class="toggle-input" id="record" type="checkbox"><span class="switch" aria-hidden="true"></span>
-      </label>
-      <div class="record-fields" id="recordFields">
-        <div class="row2">
-          <div class="field"><label for="task_dir">Task directory</label><input id="task_dir" value="./utils/data/"></div>
-          <div class="field"><label for="task_name">Task name</label><input id="task_name" value="pick cube"></div>
-          <div class="field"><label for="task_goal">Task goal</label><input id="task_goal" value="pick up cube."></div>
-          <div class="field"><label for="task_desc">Task description</label><input id="task_desc" value="task description"></div>
-          <div class="field wide"><label for="task_steps">Task steps</label><input id="task_steps" value="step1: do this; step2: do that;"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="block">
-      <div class="block-label">presets</div>
-      <div class="preset-row">
-        <button class="chip" type="button" data-preset="baseline">current baseline</button>
-        <button class="chip" type="button" data-preset="inspire">g1 + inspire</button>
-        <button class="chip" type="button" data-preset="hands">hands only</button>
-        <button class="chip" type="button" data-preset="zmq">zmq camera</button>
-        <button class="chip" type="button" data-preset="webrtc">webrtc camera</button>
-      </div>
+      <div class="block-label">presets · values remain editable</div>
+      <div class="preset-row" id="presetButtons"></div>
     </section>
   </main>
 

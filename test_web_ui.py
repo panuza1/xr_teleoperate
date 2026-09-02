@@ -9,9 +9,10 @@ import tempfile
 import threading
 import time
 import unittest
+from urllib.error import HTTPError 
 from urllib.request import Request, urlopen
 
-import web_ui
+import web_ui 
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -32,7 +33,7 @@ class ConfigurationTests(unittest.TestCase):
   --image-transport zmq""")
 
     def test_all_current_cli_parameters_have_structured_controls(self):
-        config = {
+        values = web_ui.CLI_DEFAULTS | {
             "arm": "H2", "ee": "brainco", "input_mode": "controller",
             "motion": False, "display_mode": "pass-through", "frequency": 50,
             "img_server_ip": "127.0.0.1", "image_transport": "webrtc",
@@ -40,8 +41,8 @@ class ConfigurationTests(unittest.TestCase):
             "ipc": True, "affinity": True, "record": True,
             "task_dir": "/tmp/data", "task_name": "test", "task_goal": "goal",
             "task_desc": "description", "task_steps": "one; two",
-            "extra_args": "--future-option value",
         }
+        config = {"values": values, "included": list(values), "extra_args": "--future-option value"}
         args = web_ui.build_teleop_args(config)
         for flag in web_ui.CLI_FLAGS:
             if flag != "--motion":
@@ -49,20 +50,50 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("--motion", args)
         self.assertEqual(args[-2:], ["--future-option", "value"])
 
-    def test_invalid_values_are_rejected(self):
-        invalid = (
-            {"arm": "G9"},
-            {"img_server_ip": "robot.local"},
-            {"frequency": 0},
-            {"network_interface": "lo; reboot"},
-            {"motion": "yes"},
-            {"extra_args": "--arm H2"},
-            {"extra_args": "positional"},
-            {"unknown": True},
-        )
-        for config in invalid:
-            with self.subTest(config=config), self.assertRaises(web_ui.ConfigError):
-                web_ui.build_teleop_args(config)
+    def test_parser_choices_are_strict_and_report_the_field(self):
+        config = {"values": web_ui.BASELINE_VALUES | {"arm": "G9"}, "included": web_ui.BASELINE_INCLUDED}
+        with self.assertRaises(web_ui.ConfigError) as raised:
+            web_ui.build_teleop_args(config)
+        self.assertIn("arm", raised.exception.field_errors)
+        self.assertIn("G1_29", raised.exception.field_errors["arm"])
+
+    def test_free_text_and_float_match_argparse_without_ui_restrictions(self):
+        config = {
+            "values": web_ui.CLI_DEFAULTS | {
+                "img_server_ip": "robot-camera.local",
+                "network_interface": "lab nic @ robot",
+                "frequency": "0.25",
+            },
+            "included": ["img_server_ip", "network_interface", "frequency"],
+        }
+        args = web_ui.build_teleop_args(config)
+        self.assertIn("robot-camera.local", args)
+        self.assertIn("lab nic @ robot", args)
+        self.assertIn("0.25", args)
+
+    def test_boolean_generation_defaults_reset_and_extra_args(self):
+        self.assertEqual(web_ui.build_teleop_args({"values": web_ui.CLI_DEFAULTS, "included": []}), [])
+        args = web_ui.build_teleop_args({
+            "values": web_ui.CLI_DEFAULTS | {"headless": True},
+            "included": ["headless"],
+            "extra_args": "--future-option 'two words'",
+        })
+        self.assertEqual(args, ["--headless", "--future-option", "two words"])
+        for invalid in (
+            {"values": web_ui.CLI_DEFAULTS, "included": [], "extra_args": "--arm H2"},
+            {"values": web_ui.CLI_DEFAULTS, "included": [], "extra_args": "--arm=H2"},
+            {"values": web_ui.CLI_DEFAULTS | {"motion": "yes"}, "included": ["motion"]},
+            {"values": web_ui.CLI_DEFAULTS | {"unknown": True}, "included": ["unknown"]},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(web_ui.ConfigError):
+                web_ui.build_teleop_args(invalid)
+
+    def test_presets_populate_values_but_can_be_edited(self):
+        preset = web_ui.PRESETS["baseline"]
+        edited = {"values": preset["values"] | {"arm": "H2"}, "included": preset["included"]}
+        args = web_ui.build_teleop_args(edited)
+        self.assertEqual(args[:2], ["--arm", "H2"])
+        self.assertIn("--motion", args)
 
     def test_ui_flag_set_matches_real_cli_parser(self):
         tree = ast.parse((Path(__file__).parent / "teleop" / "teleop_hand_and_arm.py").read_text())
@@ -78,6 +109,8 @@ class ConfigurationTests(unittest.TestCase):
             and node.args[0].value.startswith("--")
         }
         self.assertEqual(flags, web_ui.CLI_FLAGS)
+        self.assertEqual(len(web_ui.CLI_SCHEMA), len(flags))
+        self.assertTrue(all(spec["help"] is not None for spec in web_ui.CLI_SCHEMA))
 
 
 class ProcessManagerTests(unittest.TestCase):
@@ -103,15 +136,15 @@ class ProcessManagerTests(unittest.TestCase):
 
     def test_pty_streams_output_and_forwards_r_and_q(self):
         manager = web_ui.ProcessManager(self.script("""
-import sys
-from sshkeyboard import listen_keyboard, stop_listening
+import os, sys, tty
+tty.setraw(sys.stdin.fileno())
 print("STDOUT ready", flush=True)
 print("STDERR ready", file=sys.stderr, flush=True)
-def pressed(key):
+while True:
+    key = os.read(sys.stdin.fileno(), 1).decode()
     print(f"KEY:{key}", flush=True)
     if key == "q":
-        stop_listening()
-listen_keyboard(on_press=pressed, until=None, sequential=True)
+        break
 """))
         manager.start([])
         self.wait_for(manager, "STDERR ready")
@@ -195,16 +228,16 @@ class WebSocketTerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / "terminal_child.py"
             script.write_text("""
-import sys
-from sshkeyboard import listen_keyboard, stop_listening
+import os, sys, tty
+tty.setraw(sys.stdin.fileno())
 sys.stdout.write("\\x1b[31mRED\\x1b[0m  aligned  🚀\\n")
 sys.stdout.flush()
 print("STDERR same stream", file=sys.stderr, flush=True)
-def pressed(key):
+while True:
+    key = os.read(sys.stdin.fileno(), 1).decode()
     print(f"KEY:{key}", flush=True)
     if key == "q":
-        stop_listening()
-listen_keyboard(on_press=pressed, until=None, sequential=True)
+        break
 """)
             manager = web_ui.ProcessManager(script)
             server = web_ui.make_server(port=0, manager=manager)
@@ -282,14 +315,35 @@ class StaticUITests(unittest.TestCase):
     def test_preview_uses_server_side_launch_builder(self):
         request = Request(
             self.base + "/api/preview",
-            data=json.dumps({}).encode(),
+            data=json.dumps({"values": web_ui.BASELINE_VALUES, "included": web_ui.BASELINE_INCLUDED}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urlopen(request) as response:
             data = json.load(response)
-        self.assertEqual(data["args"], web_ui.build_teleop_args({}))
+        self.assertEqual(data["args"], web_ui.build_teleop_args({"values": web_ui.BASELINE_VALUES, "included": web_ui.BASELINE_INCLUDED}))
         self.assertEqual(data["command"], web_ui.format_command(data["args"]))
+
+    def test_schema_api_is_parser_derived_and_includes_editable_presets(self):
+        with urlopen(self.base + "/api/schema") as response:
+            schema = json.load(response)
+        self.assertEqual({item["flag"] for item in schema["parameters"]}, web_ui.CLI_FLAGS)
+        self.assertEqual(schema["baseline"]["included"], web_ui.BASELINE_INCLUDED)
+        self.assertEqual(schema["presets"]["baseline"]["values"]["image_transport"], "zmq")
+        motion = next(item for item in schema["parameters"] if item["dest"] == "motion")
+        self.assertEqual((motion["level"], motion["action"]), ("basic", "store_true"))
+
+    def test_preview_returns_field_specific_validation_errors(self):
+        request = Request(
+            self.base + "/api/preview",
+            data=json.dumps({"values": web_ui.BASELINE_VALUES | {"arm": "G9"}, "included": web_ui.BASELINE_INCLUDED}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(request)
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("arm", json.load(raised.exception)["field_errors"])
 
     def test_theme_persistence_and_motion_ui_without_body_tracking(self):
         html = (web_ui.STATIC_DIR / "index.html").read_text()
@@ -299,8 +353,20 @@ class StaticUITests(unittest.TestCase):
             self.assertIn(theme, html + css + js)
         self.assertIn("localStorage.setItem(\"xrTeleopTheme\"", js)
         self.assertIn("localStorage.setItem(\"xrTeleopConfig\"", js)
-        self.assertIn('id="motion"', html)
+        self.assertIn('data-mode="basic"', html)
+        self.assertIn('data-mode="advanced"', html)
+        self.assertIn('data-mode="all"', html)
+        self.assertIn('id="resetAll"', html)
+        self.assertIn('control.id = spec.dest', js)
+        self.assertIn('document.createElement("datalist")', js)
+        self.assertIn('"modified-badge"', js)
+        self.assertIn('"field-error"', js)
+        self.assertIn('preset) applyConfiguration(preset)', js)
+        self.assertNotIn("control.disabled", js)
+        self.assertEqual(web_ui.SCHEMA_BY_DEST["motion"]["level"], "basic")
         self.assertNotIn("body tracking", html.lower())
+        if "body_tracking" in web_ui.SCHEMA_BY_DEST:
+            self.assertEqual(web_ui.SCHEMA_BY_DEST["body_tracking"]["level"], "advanced")
 
     def test_interactive_terminal_is_focused_resizable_and_pty_backed(self):
         html = (web_ui.STATIC_DIR / "index.html").read_text()

@@ -225,3 +225,10 @@ a WebSocket, preserves ANSI/Unicode output, shows its exit status, and forwards
 keys only while that terminal has focus. This lets the existing CLI handle
 runtime keys such as `r` and `q` unchanged. Terminal output can be copied or
 cleared without affecting the process.
+
+The Basic, Advanced, and All Parameters views are generated from the real
+`argparse` declarations in `teleop_hand_and_arm.py`. CLI choices, defaults, and
+help text therefore stay aligned with the launcher. Every field remains
+editable after applying a preset; modified values have field-level reset and
+validation controls, and uncommon future flags can be appended through Extra
+CLI Arguments.

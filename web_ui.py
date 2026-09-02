@@ -4,15 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import fcntl
 import hashlib
-import ipaddress
 import json
 import os
 from pathlib import Path
 import pty
-import re
 import shlex
 import signal
 import select
@@ -31,59 +30,103 @@ ROOT = Path(__file__).resolve().parent
 TELEOP_SCRIPT = ROOT / "teleop" / "teleop_hand_and_arm.py"
 STATIC_DIR = ROOT / "web_ui"
 
-DEFAULT_CONFIG = {
+UI_META = {
+    "arm": ("Robot", "basic", "Arm"),
+    "ee": ("Robot", "basic", "End effector"),
+    "input_mode": ("XR / Input", "basic", "Input mode"),
+    "display_mode": ("XR / Input", "advanced", "Display mode"),
+    "motion": ("Motion", "basic", "Motion"),
+    "img_server_ip": ("Vision / Streaming", "basic", "Image server IP"),
+    "image_transport": ("Vision / Streaming", "basic", "Image transport"),
+    "network_interface": ("Network", "basic", "Network interface"),
+    "sim": ("Simulation", "advanced", "Simulation"),
+    "frequency": ("Runtime", "advanced", "Frequency"),
+    "headless": ("Runtime", "advanced", "Headless"),
+    "ipc": ("Runtime", "advanced", "IPC input"),
+    "affinity": ("Runtime", "advanced", "CPU affinity"),
+    "record": ("Recording", "advanced", "Record session"),
+    "task_dir": ("Recording", "advanced", "Task directory"),
+    "task_name": ("Recording", "advanced", "Task name"),
+    "task_goal": ("Recording", "advanced", "Task goal"),
+    "task_desc": ("Recording", "advanced", "Task description"),
+    "task_steps": ("Recording", "advanced", "Task steps"),
+}
+BASELINE_ORDER = ("arm", "input_mode", "motion", "img_server_ip", "image_transport")
+
+
+def load_cli_schema(path: Path = TELEOP_SCRIPT) -> list[dict]:
+    """Extract literal argparse metadata without importing hardware modules."""
+    tree = ast.parse(path.read_text())
+    found = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and node.args[0].value.startswith("--")
+        ):
+            continue
+        flag = node.args[0].value
+        keywords = {item.arg: item.value for item in node.keywords if item.arg}
+
+        def literal(name, default=None):
+            try:
+                return ast.literal_eval(keywords[name])
+            except (KeyError, TypeError, ValueError, SyntaxError):
+                return default
+
+        action = literal("action")
+        type_node = keywords.get("type")
+        value_type = type_node.id if isinstance(type_node, ast.Name) else "str"
+        dest = literal("dest", flag[2:].replace("-", "_"))
+        default = literal("default", False if action == "store_true" else None)
+        group, level, label = UI_META.get(dest, ("Advanced", "advanced", dest.replace("_", " ").title()))
+        found.append((node.lineno, {
+            "flag": flag,
+            "dest": dest,
+            "type": "bool" if action == "store_true" else value_type,
+            "default": default,
+            "choices": literal("choices"),
+            "required": bool(literal("required", False)),
+            "action": action,
+            "help": literal("help", ""),
+            "group": group,
+            "level": level,
+            "label": label,
+        }))
+    return [spec for _, spec in sorted(found)]
+
+
+CLI_SCHEMA = load_cli_schema()
+SCHEMA_BY_DEST = {spec["dest"]: spec for spec in CLI_SCHEMA}
+CLI_FLAGS = frozenset(spec["flag"] for spec in CLI_SCHEMA)
+BOOLEAN_FLAGS = frozenset(spec["flag"] for spec in CLI_SCHEMA if spec["action"] == "store_true")
+CLI_DEFAULTS = {spec["dest"]: spec["default"] for spec in CLI_SCHEMA}
+BASELINE_VALUES = CLI_DEFAULTS | {
     "arm": "G1_29",
-    "ee": "",
     "input_mode": "hand",
     "motion": True,
-    "display_mode": "immersive",
     "img_server_ip": "192.168.123.164",
     "image_transport": "zmq",
-    "frequency": 30.0,
-    "network_interface": "",
-    "headless": False,
-    "sim": False,
-    "ipc": False,
-    "affinity": False,
-    "record": False,
-    "task_dir": "./utils/data/",
-    "task_name": "pick cube",
-    "task_goal": "pick up cube.",
-    "task_desc": "task description",
-    "task_steps": "step1: do this; step2: do that;",
-    "extra_args": "",
 }
-
-CLI_FLAGS = frozenset({
-    "--frequency", "--input-mode", "--display-mode", "--arm", "--ee",
-    "--img-server-ip", "--image-transport", "--network-interface", "--motion",
-    "--headless", "--sim", "--ipc", "--affinity", "--record", "--task-dir",
-    "--task-name", "--task-goal", "--task-desc", "--task-steps",
-})
-BOOLEAN_FLAGS = frozenset({"--motion", "--headless", "--sim", "--ipc", "--affinity", "--record"})
-CHOICES = {
-    "arm": {"G1_29", "G1_23", "H1_2", "H1", "H2"},
-    "ee": {"", "dex1", "dex3", "inspire_ftp", "inspire_dfx", "brainco"},
-    "input_mode": {"hand", "controller"},
-    "display_mode": {"immersive", "ego", "pass-through"},
-    "image_transport": {"auto", "webrtc", "zmq"},
+BASELINE_INCLUDED = list(BASELINE_ORDER)
+PRESETS = {
+    "baseline": {"label": "G1 + hand + motion + ZMQ", "values": BASELINE_VALUES, "included": BASELINE_INCLUDED},
+    "inspire": {"label": "G1 + Inspire", "values": BASELINE_VALUES | {"ee": "inspire_dfx"}, "included": BASELINE_INCLUDED + ["ee"]},
+    "simulation": {"label": "Simulation", "values": CLI_DEFAULTS | {"arm": "G1_29", "input_mode": "hand", "sim": True}, "included": ["arm", "input_mode", "sim"]},
 }
-TEXT_LIMITS = {
-    "task_dir": 512,
-    "task_name": 160,
-    "task_goal": 500,
-    "task_desc": 1000,
-    "task_steps": 2000,
-}
-BOOL_FIELDS = {"motion", "headless", "sim", "ipc", "affinity", "record"}
-INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 class ConfigError(ValueError):
-    pass
+    def __init__(self, message: str, field_errors: dict | None = None):
+        super().__init__(message)
+        self.field_errors = field_errors or {}
 
 
-def _clean_text(name: str, value: object, limit: int) -> str:
+def _clean_text(name: str, value: object, limit: int = 4096) -> str:
     if not isinstance(value, str):
         raise ConfigError(f"{name} must be text")
     if len(value) > limit or any(ord(char) < 32 and char not in "\t" for char in value):
@@ -91,78 +134,96 @@ def _clean_text(name: str, value: object, limit: int) -> str:
     return value
 
 
-def normalize_config(raw: object) -> dict:
+def _same_value(value: object, default: object, value_type: str) -> bool:
+    if default is None and value == "":
+        return True
+    if value_type == "float":
+        try:
+            return float(value) == float(default)
+        except (TypeError, ValueError):
+            return False
+    return value == default
+
+
+def normalize_config(raw: object) -> tuple[dict, set, list[str]]:
     if not isinstance(raw, dict):
         raise ConfigError("configuration must be a JSON object")
-    unknown = set(raw) - set(DEFAULT_CONFIG)
-    if unknown:
-        raise ConfigError(f"unknown configuration field: {sorted(unknown)[0]}")
+    if "values" in raw:
+        values = raw.get("values")
+        included_raw = raw.get("included", [])
+        extra = raw.get("extra_args", "")
+    else:  # compatibility for direct callers: start from the requested baseline preset
+        values = BASELINE_VALUES | raw
+        included_raw = list(BASELINE_INCLUDED) + [name for name in raw if name != "extra_args"]
+        extra = values.pop("extra_args", "")
+    if not isinstance(values, dict) or not isinstance(included_raw, list) or not all(isinstance(name, str) for name in included_raw):
+        raise ConfigError("values and included parameters must be valid")
+    included = set(included_raw)
+    unknown = set(values) - set(SCHEMA_BY_DEST)
+    errors = {name: "Unknown CLI parameter." for name in unknown}
+    errors.update({name: "Unknown CLI parameter." for name in included - set(SCHEMA_BY_DEST)})
+    normalized = {}
+    for spec in CLI_SCHEMA:
+        name = spec["dest"]
+        value = values.get(name, spec["default"])
+        if spec["action"] == "store_true":
+            if not isinstance(value, bool):
+                errors[name] = "Expected an on/off value."
+            else:
+                normalized[name] = value
+            continue
+        if value is None:
+            value = ""
+        if not isinstance(value, (str, int, float)):
+            errors[name] = f"Expected {spec['type']} value."
+            continue
+        value = str(value)
+        if spec["required"] and not value:
+            errors[name] = "This parameter is required by the CLI."
+        elif not value and spec["default"] is None and name not in included:
+            pass
+        elif spec["choices"] and value not in spec["choices"]:
+            errors[name] = "Choose one of: " + ", ".join(map(str, spec["choices"])) + "."
+        elif spec["type"] == "float":
+            try:
+                float(value)
+            except ValueError:
+                errors[name] = "Expected a number."
+        else:
+            try:
+                _clean_text(name, value)
+            except ConfigError as exc:
+                errors[name] = str(exc)
+        normalized[name] = value
 
-    config = DEFAULT_CONFIG | raw
-    for name, allowed in CHOICES.items():
-        if config[name] not in allowed:
-            raise ConfigError(f"invalid {name}")
-    for name in BOOL_FIELDS:
-        if not isinstance(config[name], bool):
-            raise ConfigError(f"{name} must be true or false")
-
-    try:
-        frequency = float(config["frequency"])
-    except (TypeError, ValueError) as exc:
-        raise ConfigError("frequency must be a number") from exc
-    if not 1 <= frequency <= 240:
-        raise ConfigError("frequency must be between 1 and 240 Hz")
-    config["frequency"] = frequency
-
-    try:
-        config["img_server_ip"] = str(ipaddress.ip_address(config["img_server_ip"]))
-    except (TypeError, ValueError) as exc:
-        raise ConfigError("image server IP must be a valid IPv4 or IPv6 address") from exc
-
-    interface = config["network_interface"]
-    if not isinstance(interface, str) or (interface and not INTERFACE_RE.fullmatch(interface)):
-        raise ConfigError("network interface contains invalid characters")
-    for name, limit in TEXT_LIMITS.items():
-        config[name] = _clean_text(name, config[name], limit)
-
-    extra = _clean_text("extra_args", config["extra_args"], 512).strip()
+    extra = _clean_text("extra_args", extra, 1024).strip()
     try:
         extra_tokens = shlex.split(extra)
     except ValueError as exc:
-        raise ConfigError(f"invalid extra CLI arguments: {exc}") from exc
-    if len(extra_tokens) > 32 or (extra_tokens and not extra_tokens[0].startswith("--")):
-        raise ConfigError("extra CLI arguments must start with an option and contain at most 32 tokens")
-    if "--" in extra_tokens or CLI_FLAGS.intersection(extra_tokens):
-        raise ConfigError("known CLI options must use their dedicated controls")
-    config["extra_tokens"] = extra_tokens
-    return config
+        errors["extra_args"] = f"Invalid quoting: {exc}"
+        extra_tokens = []
+    if len(extra_tokens) > 64 or (extra_tokens and not extra_tokens[0].startswith("--")):
+        errors["extra_args"] = "Start with an option and use at most 64 tokens."
+    if "--" in extra_tokens or any(token.split("=", 1)[0] in CLI_FLAGS for token in extra_tokens):
+        errors["extra_args"] = "Known CLI options must use their dedicated controls."
+    if errors:
+        raise ConfigError("Fix the highlighted parameters.", errors)
+    return normalized, included, extra_tokens
 
 
 def build_teleop_args(raw: object) -> list[str]:
-    config = normalize_config(raw)
-    args = ["--arm", config["arm"]]
-    if config["ee"]:
-        args += ["--ee", config["ee"]]
-    args += ["--input-mode", config["input_mode"]]
-    if config["display_mode"] != DEFAULT_CONFIG["display_mode"]:
-        args += ["--display-mode", config["display_mode"]]
-    if config["frequency"] != DEFAULT_CONFIG["frequency"]:
-        args += ["--frequency", str(config["frequency"])]
-    if config["motion"]:
-        args.append("--motion")
-    args += [
-        "--img-server-ip", config["img_server_ip"],
-        "--image-transport", config["image_transport"],
-    ]
-    if config["network_interface"]:
-        args += ["--network-interface", config["network_interface"]]
-    for name in ("headless", "sim", "ipc", "affinity", "record"):
-        if config[name]:
-            args.append(f"--{name}")
-    for name in ("task_dir", "task_name", "task_goal", "task_desc", "task_steps"):
-        if config[name] != DEFAULT_CONFIG[name]:
-            args += [f"--{name.replace('_', '-')}", config[name]]
-    return args + config["extra_tokens"]
+    values, included, extra_tokens = normalize_config(raw)
+    ordered_names = list(BASELINE_ORDER) + [spec["dest"] for spec in CLI_SCHEMA if spec["dest"] not in BASELINE_ORDER]
+    args = []
+    for name in ordered_names:
+        spec = SCHEMA_BY_DEST[name]
+        value = values[name]
+        if spec["action"] == "store_true":
+            if value:
+                args.append(spec["flag"])
+        elif name in included or spec["required"] or not _same_value(value, spec["default"], spec["type"]):
+            args += [spec["flag"], value]
+    return args + extra_tokens
 
 
 def format_command(args: list[str]) -> str:
@@ -462,12 +523,12 @@ class WebUIHandler(BaseHTTPRequestHandler):
             image_state = "idle"
             if "img_server_ip" in query:
                 try:
-                    host = str(ipaddress.ip_address(query["img_server_ip"][0]))
+                    host = _clean_text("img_server_ip", query["img_server_ip"][0], 253)
                     transport = query.get("image_transport", ["zmq"])[0]
-                    if transport not in CHOICES["image_transport"]:
+                    if not host or transport not in SCHEMA_BY_DEST["image_transport"]["choices"]:
                         raise ValueError
                     image_state = probe_image_server(host, transport)
-                except ValueError:
+                except (ConfigError, ValueError):
                     image_state = "error"
             active_state = "checking" if status["running"] else "idle"
             ee = query.get("ee", [""])[0]
@@ -480,6 +541,14 @@ class WebUIHandler(BaseHTTPRequestHandler):
                     "inspire_dfx": active_state if ee == "inspire_dfx" else "idle",
                     "process": status["state"],
                 },
+            })
+            return
+        if parsed.path == "/api/schema":
+            self._json({
+                "parameters": CLI_SCHEMA,
+                "defaults": CLI_DEFAULTS,
+                "baseline": {"values": BASELINE_VALUES, "included": BASELINE_INCLUDED},
+                "presets": PRESETS,
             })
             return
         files = {
@@ -516,7 +585,7 @@ class WebUIHandler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except ConfigError as exc:
-            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self._json({"error": str(exc), "field_errors": exc.field_errors}, HTTPStatus.BAD_REQUEST)
         except RuntimeError as exc:
             self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except OSError as exc:
