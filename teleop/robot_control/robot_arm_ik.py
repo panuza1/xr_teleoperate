@@ -16,8 +16,12 @@ sys.path.append(parent2_dir)
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 
 class G1_29_ArmIK:
-    def __init__(self, Unit_Test = False, Visualization = False):
+    def __init__(self, Unit_Test = False, Visualization = False, reach_gain = 1.0):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
+
+        if not np.isfinite(reach_gain) or reach_gain <= 0:
+            raise ValueError("[G1_29_ArmIK] reach_gain must be finite and greater than zero.")
+        self.reach_gain = float(reach_gain)
 
         self.Unit_Test = Unit_Test
         self.Visualization = Visualization
@@ -97,6 +101,13 @@ class G1_29_ArmIK:
             if not os.path.exists(self.cache_path):
                 self.save_cache()
                 logger_mp.info(f">>> Cache saved to {self.cache_path}")
+
+        self.left_shoulder_origin = self.reduced_robot.model.jointPlacements[
+            self.reduced_robot.model.getJointId('left_shoulder_pitch_joint')
+        ].translation.copy()
+        self.right_shoulder_origin = self.reduced_robot.model.jointPlacements[
+            self.reduced_robot.model.getJointId('right_shoulder_pitch_joint')
+        ].translation.copy()
 
         # for i in range(self.reduced_robot.model.nframes):
         #     frame = self.reduced_robot.model.frames[i]
@@ -242,20 +253,26 @@ class G1_29_ArmIK:
 
         return robot, reduced_robot
 
-    def scale_arms(self, human_left_pose, human_right_pose, human_arm_length=0.60, robot_arm_length=0.75):
-        scale_factor = robot_arm_length / human_arm_length
-        robot_left_pose = human_left_pose.copy()
-        robot_right_pose = human_right_pose.copy()
-        robot_left_pose[:3, 3] *= scale_factor
-        robot_right_pose[:3, 3] *= scale_factor
-        return robot_left_pose, robot_right_pose
+    def scale_arms(self, left_pose, right_pose):
+        if self.reach_gain == 1.0:
+            return left_pose, right_pose
+
+        scaled_left_pose = left_pose.copy()
+        scaled_right_pose = right_pose.copy()
+        scaled_left_pose[:3, 3] = self.left_shoulder_origin + self.reach_gain * (
+            left_pose[:3, 3] - self.left_shoulder_origin
+        )
+        scaled_right_pose[:3, 3] = self.right_shoulder_origin + self.reach_gain * (
+            right_pose[:3, 3] - self.right_shoulder_origin
+        )
+        return scaled_left_pose, scaled_right_pose
 
     def solve_ik(self, left_wrist, right_wrist, current_lr_arm_motor_q = None, current_lr_arm_motor_dq = None):
         if current_lr_arm_motor_q is not None:
             self.init_data = current_lr_arm_motor_q
         self.opti.set_initial(self.var_q, self.init_data)
 
-        # left_wrist, right_wrist = self.scale_arms(left_wrist, right_wrist)
+        left_wrist, right_wrist = self.scale_arms(left_wrist, right_wrist)
         if self.Visualization:
             self.vis.viewer['L_ee_target'].set_transform(left_wrist)   # for visualization
             self.vis.viewer['R_ee_target'].set_transform(right_wrist)  # for visualization
