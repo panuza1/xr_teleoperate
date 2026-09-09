@@ -214,6 +214,8 @@ From the repository root, start the local UI and open
 `http://127.0.0.1:8080`:
 
 ```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate tv
 python web_ui.py
 ```
 

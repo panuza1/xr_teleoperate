@@ -188,6 +188,15 @@ function clearFieldErrors() {
 }
 
 function showFieldErrors(errors = {}) {
+  if (Object.keys(errors).some(name => !$(`field-${name}`))) {
+    parameterMode = "all";
+    document.querySelectorAll(".mode-btn").forEach(button => {
+      const active = button.dataset.mode === "all";
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    renderParameters();
+  }
   clearFieldErrors();
   for (const [name, text] of Object.entries(errors)) {
     const field = $(`field-${name}`), output = $(`error-${name}`);
@@ -452,6 +461,9 @@ $("terminalResize").addEventListener("pointerdown", event => {
   window.addEventListener("pointerup", up);
 });
 new ResizeObserver(resizePty).observe($("terminalSurface"));
+window.addEventListener("resize", resizePty);
+requestAnimationFrame(resizePty);
+document.fonts?.ready.then(resizePty);
 
 async function initialize() {
   try {

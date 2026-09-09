@@ -196,9 +196,12 @@ def normalize_config(raw: object) -> tuple[dict, set, list[str]]:
                 errors[name] = str(exc)
         normalized[name] = value
 
-    extra = _clean_text("extra_args", extra, 1024).strip()
     try:
+        extra = _clean_text("extra_args", extra, 1024).strip()
         extra_tokens = shlex.split(extra)
+    except ConfigError as exc:
+        errors["extra_args"] = str(exc)
+        extra_tokens = []
     except ValueError as exc:
         errors["extra_args"] = f"Invalid quoting: {exc}"
         extra_tokens = []
@@ -449,6 +452,8 @@ class WebUIHandler(BaseHTTPRequestHandler):
         self._send(json.dumps(value).encode(), "application/json; charset=utf-8", status)
 
     def _read_json(self) -> object:
+        if self.headers.get("Content-Type", "").partition(";")[0].strip().lower() != "application/json":
+            raise ConfigError("Content-Type must be application/json")
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -460,16 +465,22 @@ class WebUIHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise ConfigError("invalid JSON") from exc
 
+    def _same_origin(self) -> bool:
+        host = self.headers.get("Host", "")
+        port = self.server.server_address[1]
+        allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            allowed_hosts |= {"127.0.0.1", "localhost"}
+        return host.lower() in allowed_hosts and self.headers.get("Origin") == f"http://{host}"
+
     def _serve_terminal_websocket(self) -> None:
         key = self.headers.get("Sec-WebSocket-Key")
-        host = self.headers.get("Host", "")
-        origin = self.headers.get("Origin")
         if (
             self.headers.get("Upgrade", "").lower() != "websocket"
             or "upgrade" not in self.headers.get("Connection", "").lower()
             or self.headers.get("Sec-WebSocket-Version") != "13"
             or not key
-            or origin not in {f"http://{host}", f"https://{host}"}
+            or not self._same_origin()
         ):
             self._json({"error": "invalid WebSocket upgrade"}, HTTPStatus.BAD_REQUEST)
             return
@@ -569,6 +580,9 @@ class WebUIHandler(BaseHTTPRequestHandler):
             self._json({"error": "static asset unavailable"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:
+        if not self._same_origin():
+            self._json({"error": "request must be same-origin"}, HTTPStatus.FORBIDDEN)
+            return
         try:
             payload = self._read_json()
             if self.path == "/api/preview":

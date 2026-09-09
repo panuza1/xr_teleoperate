@@ -15,6 +15,24 @@ from urllib.request import Request, urlopen
 import web_ui 
 
 
+class HarmlessManager:
+    def __init__(self):
+        self.start_calls = 0
+
+    def start(self, _args):
+        self.start_calls += 1
+        return self.status()
+
+    def stop(self):
+        return self.status()
+
+    def status(self):
+        return {"state": "stopped", "running": False, "pid": None, "exit_code": None}
+
+    def clear_output(self):
+        pass
+
+
 class ConfigurationTests(unittest.TestCase):
     def test_default_is_current_real_command(self):
         args = web_ui.build_teleop_args({})
@@ -87,6 +105,12 @@ class ConfigurationTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(web_ui.ConfigError):
                 web_ui.build_teleop_args(invalid)
+
+    def test_extra_args_errors_map_to_the_field(self):
+        for extra_args in ("x" * 1025, "--future 'unterminated", ["--future"]):
+            with self.subTest(extra_args=extra_args), self.assertRaises(web_ui.ConfigError) as raised:
+                web_ui.build_teleop_args({"values": web_ui.CLI_DEFAULTS, "included": [], "extra_args": extra_args})
+            self.assertEqual(set(raised.exception.field_errors), {"extra_args"})
 
     def test_presets_populate_values_but_can_be_edited(self):
         preset = web_ui.PRESETS["baseline"]
@@ -188,6 +212,37 @@ while True:
         self.assertFalse(status["running"])
         self.assertEqual(status["exit_code"], 0)
 
+    def test_resize_updates_the_mock_pty_dimensions(self):
+        manager = web_ui.ProcessManager(self.script("""
+import os, time
+while True:
+    size = os.get_terminal_size()
+    print(f"SIZE:{size.columns}x{size.lines}", flush=True)
+    time.sleep(.05)
+"""))
+        manager.start([])
+        self.wait_for(manager, "SIZE:120x40")
+        manager.resize(123, 45)
+        self.wait_for(manager, "SIZE:123x45")
+        manager.stop(timeout=2)
+
+    def test_stop_cleans_up_the_process_group(self):
+        manager = web_ui.ProcessManager(self.script("""
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(f"CHILD:{child.pid}", flush=True)
+while True:
+    time.sleep(.1)
+"""))
+        manager.start([])
+        output = self.wait_for(manager, "CHILD:")
+        child_pid = int(output.split("CHILD:", 1)[1].split()[0])
+        manager.stop(timeout=2)
+        deadline = time.monotonic() + 2
+        while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertFalse(Path(f"/proc/{child_pid}").exists())
+
 
 class WebSocketTerminalTests(unittest.TestCase):
     @staticmethod
@@ -284,11 +339,32 @@ while True:
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_websocket_rejects_cross_origin_and_dns_rebinding(self):
+        server = web_ui.make_server(port=0, manager=HarmlessManager())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            for host, origin in ((f"127.0.0.1:{port}", "http://evil.example"), (f"evil.example:{port}", f"http://evil.example:{port}")):
+                with self.subTest(host=host, origin=origin), socket.create_connection(server.server_address, timeout=3) as connection:
+                    key = base64.b64encode(os.urandom(16)).decode()
+                    connection.sendall((
+                        "GET /ws/terminal HTTP/1.1\r\n"
+                        f"Host: {host}\r\nOrigin: {origin}\r\n"
+                        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode())
+                    self.assertIn(b"400 Bad Request", connection.recv(1024))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
 
 class StaticUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = web_ui.make_server(port=0)
+        cls.server = web_ui.make_server(port=0, manager=HarmlessManager())
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -316,7 +392,7 @@ class StaticUITests(unittest.TestCase):
         request = Request(
             self.base + "/api/preview",
             data=json.dumps({"values": web_ui.BASELINE_VALUES, "included": web_ui.BASELINE_INCLUDED}).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Origin": self.base},
             method="POST",
         )
         with urlopen(request) as response:
@@ -337,13 +413,55 @@ class StaticUITests(unittest.TestCase):
         request = Request(
             self.base + "/api/preview",
             data=json.dumps({"values": web_ui.BASELINE_VALUES | {"arm": "G9"}, "included": web_ui.BASELINE_INCLUDED}).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Origin": self.base},
             method="POST",
         )
         with self.assertRaises(HTTPError) as raised:
             urlopen(request)
         self.assertEqual(raised.exception.code, 400)
         self.assertIn("arm", json.load(raised.exception)["field_errors"])
+
+    def test_posts_require_same_origin_json_and_valid_payloads(self):
+        self.server.process_manager.start_calls = 0
+        cases = (
+            ({"Origin": "http://evil.example", "Content-Type": "application/json"}, b"{}", 403),
+            ({"Origin": self.base, "Content-Type": "text/plain"}, b"{}", 400),
+            ({"Origin": self.base}, b"{}", 400),
+            ({"Origin": self.base, "Content-Type": "application/json"}, b"{", 400),
+        )
+        for headers, body, status in cases:
+            with self.subTest(headers=headers, body=body):
+                request = Request(self.base + "/api/start", data=body, headers=headers, method="POST")
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request)
+                self.assertEqual(raised.exception.code, status)
+        self.assertEqual(self.server.process_manager.start_calls, 0)
+
+    def test_same_origin_json_start_reaches_only_the_harmless_manager(self):
+        self.server.process_manager.start_calls = 0
+        request = Request(
+            self.base + "/api/start",
+            data=json.dumps({"values": web_ui.CLI_DEFAULTS, "included": []}).encode(),
+            headers={"Content-Type": "application/json", "Origin": self.base},
+            method="POST",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.server.process_manager.start_calls, 1)
+
+    def test_extra_args_api_error_is_field_specific(self):
+        for extra_args in ("x" * 1025, "--future 'unterminated", ["--future"]):
+            with self.subTest(extra_args=extra_args):
+                request = Request(
+                    self.base + "/api/preview",
+                    data=json.dumps({"values": web_ui.CLI_DEFAULTS, "included": [], "extra_args": extra_args}).encode(),
+                    headers={"Content-Type": "application/json", "Origin": self.base},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(request)
+                self.assertEqual(raised.exception.code, 400)
+                self.assertEqual(set(json.load(raised.exception)["field_errors"]), {"extra_args"})
 
     def test_theme_persistence_and_motion_ui_without_body_tracking(self):
         html = (web_ui.STATIC_DIR / "index.html").read_text()
@@ -361,6 +479,7 @@ class StaticUITests(unittest.TestCase):
         self.assertIn('document.createElement("datalist")', js)
         self.assertIn('"modified-badge"', js)
         self.assertIn('"field-error"', js)
+        self.assertIn('Object.keys(errors).some(name => !$(`field-${name}`))', js)
         self.assertIn('preset) applyConfiguration(preset)', js)
         self.assertNotIn("control.disabled", js)
         self.assertEqual(web_ui.SCHEMA_BY_DEST["motion"]["level"], "basic")
@@ -376,10 +495,17 @@ class StaticUITests(unittest.TestCase):
         for marker in ('id="terminalSurface" tabindex="0"', 'id="terminalResize"', 'id="terminalMaximize"', 'id="terminalLarger"', 'id="terminalSmaller"'):
             self.assertIn(marker, html)
         self.assertIn("height:400px", css)
+        self.assertIn("min-width:640px", css)
+        self.assertIn("overflow-x:auto", css)
+        self.assertIn("#terminalOutput .xterm{height:100%;padding:", css)
         self.assertIn("new Terminal(", js)
         self.assertIn("new WebSocket(", js)
         self.assertIn("terminal.write(data", js)
         self.assertIn("terminal.onData(data", js)
+        self.assertIn('window.addEventListener("resize", resizePty)', js)
+        self.assertIn("requestAnimationFrame(resizePty)", js)
+        self.assertIn("document.fonts?.ready.then(resizePty)", js)
+        self.assertIn("new ResizeObserver(resizePty)", js)
         self.assertNotIn('document.addEventListener("keydown"', js)
         self.assertNotIn("terminalKey", js)
         self.assertNotIn(".replace(/\\x1b", js)
@@ -396,9 +522,9 @@ class StaticUITests(unittest.TestCase):
         for section in ("config", "camera", "robot", "recordings", "diagnostics"):
             self.assertIn(f'data-target="{section}"', html)
         for fragment in (
-            "grid-template-columns:210px", "380px", "max-width:640px",
+            "grid-template-columns:210px", "minmax(700px,45vw)", "max-width:640px",
             "--accent:#0e9488", "--accent:#111111", "--accent:#56d6c8",
-            "@media(max-width:1100px)", "@media(max-width:620px)",
+            "@media(max-width:1360px)", "@media(max-width:620px)",
         ):
             self.assertIn(fragment, css)
         self.assertNotIn("gradient", css.lower())
