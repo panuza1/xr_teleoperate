@@ -21,6 +21,7 @@ from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
 from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_velocity
+from teleop.utils.unitree_remote_monitor import UnitreeRemoteMonitor
 from sshkeyboard import listen_keyboard, stop_listening
 
 # for simulation
@@ -105,6 +106,8 @@ if __name__ == '__main__':
     parser.add_argument('--network-interface', type=str, default=None, help='Network interface for DDS; defaults to lo with --sim and SDK default otherwise.')
     # mode flags
     parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')   
+    parser.add_argument('--locomotion-input', choices=['quest', 'unitree', 'none'], default='quest',
+                        help='Select locomotion input source (default: quest)')
     parser.add_argument('--headless', action='store_true', help='Enable headless mode (no display)')
     parser.add_argument('--sim', action = 'store_true', help = 'Enable isaac simulation mode')
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')
@@ -118,12 +121,13 @@ if __name__ == '__main__':
     parser.add_argument('--task-steps', type = str, default = 'step1: do this; step2: do that;', help = 'task steps for recording at json file')
 
     args = parser.parse_args()
-    controller_locomotion = controller_locomotion_enabled(args.motion, args.arm)
+    controller_locomotion = controller_locomotion_enabled(args.motion, args.arm, args.locomotion_input)
+    logger_mp.info(f"Locomotion source: {args.locomotion_input.upper()}")
     logger_mp.debug(f"args: {args}")
 
     arm_ctrl = ipc_server = listen_keyboard_thread = None
     img_client = tv_wrapper = sim_state_subscriber = recorder = None
-    motion_switcher = ee_ctrl = None
+    motion_switcher = ee_ctrl = remote_monitor = None
     debug_mode_was_entered = False
 
     try:
@@ -132,6 +136,9 @@ if __name__ == '__main__':
             ChannelFactoryInitialize(1, networkInterface=args.network_interface or "lo")
         else:
             ChannelFactoryInitialize(0, networkInterface=args.network_interface)
+
+        if args.locomotion_input == "unitree" and args.arm.startswith("G1"):
+            remote_monitor = UnitreeRemoteMonitor(logger=logger_mp).start()
 
         # ipc communication mode. client usage: see utils/ipc.py
         if args.ipc:
@@ -652,6 +659,12 @@ if __name__ == '__main__':
                 tv_wrapper.close()
         except Exception as e:
             logger_mp.error(f"Failed to close televuer wrapper: {e}")
+
+        try:
+            if remote_monitor is not None:
+                remote_monitor.close()
+        except Exception as e:
+            logger_mp.error(f"Failed to close Unitree remote monitor: {e}")
 
         try:
             if sim_state_subscriber is not None:

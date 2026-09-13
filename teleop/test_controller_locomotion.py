@@ -1,4 +1,5 @@
 import unittest
+import struct
 from types import SimpleNamespace
 
 from teleop.utils.controller_locomotion import (
@@ -6,8 +7,10 @@ from teleop.utils.controller_locomotion import (
     CONTROLLER_YAW_SCALE,
     apply_controller_locomotion,
     controller_locomotion_enabled,
+    locomotion_owner,
 )
 from teleop.utils.motion_switcher import LocoClientWrapper
+from teleop.utils.unitree_remote_monitor import UnitreeRemoteMonitor, parse_wireless_remote
 
 
 class FakeLocoClient:
@@ -48,10 +51,23 @@ class ControllerLocomotionTest(unittest.TestCase):
             self.assertAlmostEqual(actual, wanted)
 
     def test_g1_motion_mode_enables_controller_locomotion(self):
-        self.assertTrue(controller_locomotion_enabled(True, "G1_29"))
+        self.assertTrue(controller_locomotion_enabled(True, "G1_29"))  # default remains quest
         self.assertTrue(controller_locomotion_enabled(True, "G1_23"))
         self.assertFalse(controller_locomotion_enabled(False, "G1_29"))
         self.assertFalse(controller_locomotion_enabled(True, "H1_2"))
+
+    def test_only_quest_source_can_move(self):
+        client = FakeLocoClient()
+        apply_controller_locomotion(SimpleNamespace(), client, now=10.1, source="unitree")
+        self.assertEqual(client.calls, [])
+        apply_controller_locomotion(SimpleNamespace(), client, now=10.1, source="none")
+        self.assertEqual(client.calls, [])
+
+    def test_locomotion_has_one_explicit_owner(self):
+        self.assertEqual(locomotion_owner("quest", True, "G1_29"), "quest")
+        self.assertEqual(locomotion_owner("unitree", True, "G1_29"), "unitree")
+        self.assertIsNone(locomotion_owner("none", True, "G1_29"))
+        self.assertIsNone(locomotion_owner("quest", False, "G1_29"))
 
     def test_center_directions_and_combinations(self):
         translation = CONTROLLER_VELOCITY_SCALE
@@ -124,6 +140,47 @@ class ControllerLocomotionTest(unittest.TestCase):
                 now=10.1,
             )
         )
+
+    def test_wireless_remote_parser(self):
+        data = bytearray(40)
+        struct.pack_into("<f", data, 4, -0.1)
+        struct.pack_into("<f", data, 8, 0.2)
+        struct.pack_into("<f", data, 12, -0.3)
+        struct.pack_into("<f", data, 20, 0.4)
+        data[2] = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5)
+        data[3] = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7)
+
+        state = parse_wireless_remote(data)
+        self.assertAlmostEqual(state.lx, -0.1)
+        self.assertAlmostEqual(state.ly, 0.4)
+        self.assertAlmostEqual(state.rx, 0.2)
+        self.assertAlmostEqual(state.ry, -0.3)
+        self.assertTrue(all(getattr(state, name) for name in (
+            "a", "y", "l1", "l2", "r1", "r2", "start", "select",
+            "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+        )))
+        self.assertTrue(state.connected)
+
+    def test_remote_monitor_is_read_only_and_tracks_connection(self):
+        class Subscriber:
+            def Init(self, handler, queue_len):
+                self.handler = handler
+                self.queue_len = queue_len
+
+            def Close(self):
+                self.closed = True
+
+        subscriber = Subscriber()
+        monitor = UnitreeRemoteMonitor(subscriber=subscriber).start()
+        subscriber.handler(SimpleNamespace(wireless_remote=bytes(40)))
+        self.assertFalse(monitor.connected)
+        data = bytearray(40)
+        data[3] = 1
+        subscriber.handler(SimpleNamespace(wireless_remote=data))
+        self.assertTrue(monitor.connected)
+        self.assertIsNotNone(monitor.last_state)
+        monitor.close()
+        self.assertTrue(subscriber.closed)
 
 
 if __name__ == "__main__":

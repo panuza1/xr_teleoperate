@@ -2,14 +2,18 @@
 
 > Full original documentation: [README_old.md](README_old.md)
 
-Quest hand tracking controls the Unitree G1 arms. In physical motion mode, Quest controllers command the Unitree high-level locomotion controller:
+Quest hand tracking controls the Unitree G1 arms and Inspire hands. Locomotion input is selectable with `--locomotion-input` (`quest` by default):
 
 - Right stick vertical: forward/backward
 - Right stick horizontal: strafe left/right
 - Left stick horizontal: yaw left/right
 - Left stick vertical: ignored
 
-The Unitree controller remains responsible for the legs and balance. This project does not directly command low-level leg joints in motion mode.
+- `quest`: Quest thumbsticks command high-level locomotion.
+- `unitree`: the native Unitree wireless controller remains responsible for locomotion; xr_teleoperate only monitors `rt/lowstate`.
+- `none`: xr_teleoperate sends no locomotion commands.
+
+The Unitree wireless remote monitor is read-only. This project does not directly command low-level leg joints in motion mode.
 
 ## Safety
 
@@ -172,8 +176,31 @@ python teleop_hand_and_arm.py \
   --arm G1_29 \
   --input-mode hand \
   --motion \
+  --locomotion-input quest \
   --img-server-ip 192.168.123.164 \
   --image-transport zmq
+```
+
+### Terminal 2 — Hand-tracked arms + Unitree controller walking
+
+Quest hand tracking still drives the arms and Inspire DFX hands. Quest controller locomotion is disabled, and the native Unitree motion system owns the legs:
+
+```bash
+python teleop_hand_and_arm.py \
+  --arm G1_29 \
+  --input-mode hand \
+  --motion \
+  --locomotion-input unitree \
+  --ee inspire_dfx \
+  --img-server-ip 192.168.123.164 \
+  --image-transport zmq
+```
+
+```text
+Quest 3 hand tracking -> IK -> rt/arm_sdk -> G1 arms
+Quest 3 hand tracking -> Inspire DFX hands
+
+Unitree wireless controller -> native G1 motion system -> G1 legs
 ```
 
 Current maximum command scales:
@@ -207,6 +234,13 @@ python teleop/inspect_hybrid_input.py --frequency 10
 ```
 
 Verify that both controllers become active, centered sticks produce `Move(0, 0, 0)`, and stale input returns the affected axes to zero before running the physical motion-mode command.
+
+To inspect the Unitree-owned or no-locomotion paths without DDS or robot commands:
+
+```bash
+python teleop/inspect_hybrid_input.py --locomotion-input unitree --duration 10
+python teleop/inspect_hybrid_input.py --locomotion-input none --duration 10
+```
 
 ## XR Teleop Web UI
 

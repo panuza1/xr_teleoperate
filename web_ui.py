@@ -36,6 +36,7 @@ UI_META = {
     "input_mode": ("XR / Input", "basic", "Input mode"),
     "display_mode": ("XR / Input", "advanced", "Display mode"),
     "motion": ("Motion", "basic", "Motion"),
+    "locomotion_input": ("Motion", "basic", "Locomotion input"),
     "img_server_ip": ("Vision / Streaming", "basic", "Image server IP"),
     "image_transport": ("Vision / Streaming", "basic", "Image transport"),
     "network_interface": ("Network", "basic", "Network interface"),

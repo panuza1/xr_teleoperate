@@ -4,10 +4,18 @@ import time
 CONTROLLER_INPUT_TIMEOUT = 0.5
 CONTROLLER_VELOCITY_SCALE = 0.3
 CONTROLLER_YAW_SCALE = 0.15
+LOCOMOTION_INPUTS = ("quest", "unitree", "none")
 
 
-def controller_locomotion_enabled(motion, arm):
-    return motion and arm.startswith("G1")
+def locomotion_owner(source, motion, arm):
+    if source not in LOCOMOTION_INPUTS:
+        raise ValueError(f"unsupported locomotion source: {source}")
+    return source if motion and arm.startswith("G1") and source != "none" else None
+
+
+def controller_locomotion_enabled(motion, arm, source="quest"):
+    """Return whether Quest owns locomotion for this run."""
+    return locomotion_owner(source, motion, arm) == "quest"
 
 
 def controller_input_fresh(tele_data, now=None, side="right"):
@@ -29,7 +37,9 @@ def controller_velocity(tele_data, now=None):
     )
 
 
-def apply_controller_locomotion(tele_data, loco_wrapper, now=None):
+def apply_controller_locomotion(tele_data, loco_wrapper, now=None, source="quest"):
+    if source != "quest":
+        return False
     now = time.monotonic() if now is None else now
     left_fresh = controller_input_fresh(tele_data, now, "left")
     right_fresh = controller_input_fresh(tele_data, now, "right")

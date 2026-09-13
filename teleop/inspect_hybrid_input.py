@@ -16,11 +16,16 @@ def main():
     parser = argparse.ArgumentParser(description="Inspect hybrid Quest input; no DDS or robot commands.")
     parser.add_argument("--frequency", type=float, default=10.0)
     parser.add_argument("--duration", type=float, default=0.0, help="Seconds to run; zero runs until Ctrl-C.")
+    parser.add_argument("--locomotion-input", choices=("quest", "unitree", "none"), default="quest")
     args = parser.parse_args()
+
+    print(f"Locomotion source: {args.locomotion_input.upper()}", flush=True)
+    if args.locomotion_input != "quest":
+        print("Quest locomotion commands: disabled (read-only/no DDS inspection)", flush=True)
 
     tv = TeleVuerWrapper(
         use_hand_tracking=True,
-        use_controller_input=True,
+        use_controller_input=args.locomotion_input == "quest",
         img_shape=(480, 1280),
         display_mode="pass-through",
     )
@@ -32,7 +37,7 @@ def main():
             now = time.monotonic()
             left_age = now - data.left_controller_data_updated_at if data.left_controller_data_updated_at else float("inf")
             right_age = now - data.right_controller_data_updated_at if data.right_controller_data_updated_at else float("inf")
-            vx, vy, vyaw = controller_velocity(data, now)
+            vx, vy, vyaw = controller_velocity(data, now) if args.locomotion_input == "quest" else (0.0, 0.0, 0.0)
             print(
                 f"HAND: {'active' if data.motion_data_ready else 'waiting'} | "
                 f"RIGHT CONTROLLER: {'active' if controller_input_fresh(data, now, 'right') else 'waiting/stale'} | "
