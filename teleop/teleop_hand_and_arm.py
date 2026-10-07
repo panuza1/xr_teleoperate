@@ -94,7 +94,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # basic control parameters
     parser.add_argument('--frequency', type = float, default = 30.0, help = 'control and record \'s frequency')
-    parser.add_argument('--input-mode', type=str, choices=['hand', 'controller'], default='hand', help='Select XR device input tracking source')
+    parser.add_argument('--input-mode', type=str, choices=['hand', 'controller', 'hybrid'], default='hand', help='Select XR device input tracking source')
     parser.add_argument('--display-mode', type=str, choices=['immersive', 'ego', 'pass-through'], default='immersive', help='Select XR device display mode')
     parser.add_argument('--arm', type=str, choices=['G1_29', 'G1_23', 'H1_2', 'H1', 'H2'], default='G1_29', help='Select arm controller')
     parser.add_argument('--arm-reach-gain', type=float, default=1.0, help='Shoulder-relative wrist reach gain for G1_29')
@@ -121,6 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--task-steps', type = str, default = 'step1: do this; step2: do that;', help = 'task steps for recording at json file')
 
     args = parser.parse_args()
+    hand_tracking_input = args.input_mode in ('hand', 'hybrid')
     controller_locomotion = controller_locomotion_enabled(args.motion, args.arm, args.locomotion_input)
     logger_mp.info(f"Locomotion source: {args.locomotion_input.upper()}")
     logger_mp.debug(f"args: {args}")
@@ -172,8 +173,8 @@ if __name__ == '__main__':
         )
 
         # televuer_wrapper: obtain hand pose data from the XR device and transmit the robot's head camera image to the XR device.
-        tv_wrapper = TeleVuerWrapper(use_hand_tracking=args.input_mode == "hand",
-                                     use_controller_input=args.input_mode == "controller" or controller_locomotion,
+        tv_wrapper = TeleVuerWrapper(use_hand_tracking=hand_tracking_input,
+                                     use_controller_input=args.input_mode in ("controller", "hybrid") or controller_locomotion,
                                      binocular=camera_config['head_camera']['binocular'],
                                      img_shape=camera_config['head_camera']['image_shape'],
                                      # maybe should decrease fps for better performance?
@@ -278,7 +279,7 @@ if __name__ == '__main__':
             dual_hand_state_array = Array('d', 12, lock = False)   # [output] current left, right hand state(12) data.
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
             ee_ctrl = Inspire_Controller_FTP(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
-        elif args.ee == "brainco" and args.input_mode == "hand":
+        elif args.ee == "brainco" and hand_tracking_input:
             from teleop.robot_control.robot_hand_brainco import Brainco_Controller_hand
             left_hand_pos_array = Array('d', 75, lock = True)      # [input]
             right_hand_pos_array = Array('d', 75, lock = True)     # [input]
@@ -391,7 +392,7 @@ if __name__ == '__main__':
 
             # get xr's tele data
             tele_data = tv_wrapper.get_tele_data()
-            if args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco")  and args.input_mode == "hand":
+            if args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco") and hand_tracking_input:
                 with left_hand_pos_array.get_lock():
                     left_hand_pos_array[:] = tele_data.left_hand_pos.flatten()
                 with right_hand_pos_array.get_lock():
@@ -415,7 +416,7 @@ if __name__ == '__main__':
                     left_gripper_value.value = tele_data.left_ctrl_triggerValue
                 with right_gripper_value.get_lock():
                     right_gripper_value.value = tele_data.right_ctrl_triggerValue
-            elif args.ee == "dex1" and args.input_mode == "hand":
+            elif args.ee == "dex1" and hand_tracking_input:
                 with left_gripper_value.get_lock():
                     left_gripper_value.value = tele_data.left_hand_pinchValue
                 with right_gripper_value.get_lock():
@@ -446,7 +447,7 @@ if __name__ == '__main__':
             if args.record:
                 READY = recorder.is_ready() # now ready to (2) enter RECORD_RUNNING state
                 # dex hand or gripper
-                if args.ee == "dex3" and args.input_mode == "hand":
+                if args.ee == "dex3" and hand_tracking_input:
                     with dual_hand_data_lock:
                         left_ee_state = dual_hand_state_array[:7]
                         right_ee_state = dual_hand_state_array[-7:]
@@ -454,7 +455,7 @@ if __name__ == '__main__':
                         right_hand_action = dual_hand_action_array[-7:]
                         current_body_state = []
                         current_body_action = []
-                elif args.ee == "dex1" and args.input_mode == "hand":
+                elif args.ee == "dex1" and hand_tracking_input:
                     with dual_gripper_data_lock:
                         left_ee_state = [dual_gripper_state_array[0]]
                         right_ee_state = [dual_gripper_state_array[1]]
@@ -470,7 +471,7 @@ if __name__ == '__main__':
                         right_hand_action = [dual_gripper_action_array[1]]
                         current_body_state = arm_ctrl.get_current_motor_q().tolist()
                         current_body_action = list(controller_velocity(tele_data))
-                elif (args.ee == "inspire_dfx" or args.ee == "inspire_ftp" or args.ee == "brainco") and args.input_mode == "hand":
+                elif args.ee in ("inspire_dfx", "inspire_ftp", "brainco") and hand_tracking_input:
                     with dual_hand_data_lock:
                         left_ee_state = dual_hand_state_array[:6]
                         right_ee_state = dual_hand_state_array[-6:]
