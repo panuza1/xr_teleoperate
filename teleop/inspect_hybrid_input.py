@@ -35,11 +35,12 @@ def main():
         while not args.duration or time.monotonic() - started < args.duration:
             data = tv.get_tele_data()
             now = time.monotonic()
+            hand_age = now - data.hand_data_updated_at if data.hand_data_updated_at else float("inf")
             left_age = now - data.left_controller_data_updated_at if data.left_controller_data_updated_at else float("inf")
             right_age = now - data.right_controller_data_updated_at if data.right_controller_data_updated_at else float("inf")
             vx, vy, vyaw = controller_velocity(data, now) if args.locomotion_input == "quest" else (0.0, 0.0, 0.0)
             print(
-                f"HAND: {'active' if data.motion_data_ready else 'waiting'} | "
+                f"HAND: {'active' if 0.0 <= hand_age < 0.5 else 'waiting/stale'} | "
                 f"RIGHT CONTROLLER: {'active' if controller_input_fresh(data, now, 'right') else 'waiting/stale'} | "
                 f"LEFT CONTROLLER: {'active' if controller_input_fresh(data, now, 'left') else 'waiting/stale'} | "
                 f"RIGHT STICK: {data.right_ctrl_thumbstickValue} | "

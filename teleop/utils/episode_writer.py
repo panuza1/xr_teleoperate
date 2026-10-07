@@ -112,6 +112,13 @@ class EpisodeWriter():
         os.makedirs(self.color_dir, exist_ok=True)
         os.makedirs(self.depth_dir, exist_ok=True)
         os.makedirs(self.audio_dir, exist_ok=True)
+        self.episode_timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._episode_monotonic_start = time.monotonic()
+        self.info["timestamps"] = {
+            "episode_timestamp": self.episode_timestamp,
+            "clock": "monotonic",
+            "unit": "seconds_since_episode_start",
+        }
         with open(self.json_path, "w", encoding="utf-8") as f:
             f.write('{\n')
             f.write('"info": ' + json.dumps(self.info, ensure_ascii=False, indent=4) + ',\n')
@@ -126,12 +133,32 @@ class EpisodeWriter():
         logger_mp.info(f"==> New episode created: {self.episode_dir}")
         return True  # Return True if the episode is successfully created
         
-    def add_item(self, colors, depths=None, states=None, actions=None, tactiles=None, audios=None, sim_state=None):
+    def add_item(
+        self,
+        colors,
+        depths=None,
+        states=None,
+        actions=None,
+        tactiles=None,
+        audios=None,
+        sim_state=None,
+        observation_timestamp=None,
+        action_timestamp=None,
+    ):
         # Increment the item ID
         self.item_id += 1
+        frame_timestamp = time.monotonic() - self._episode_monotonic_start
+        if observation_timestamp is None:
+            observation_timestamp = frame_timestamp
+        if action_timestamp is None:
+            action_timestamp = frame_timestamp
         # Create the item data dictionary
         item_data = {
             'idx': self.item_id,
+            'timestamp': frame_timestamp,
+            'frame_timestamp': frame_timestamp,
+            'observation_timestamp': observation_timestamp,
+            'action_timestamp': action_timestamp,
             'colors': colors,
             'depths': depths,
             'states': states,

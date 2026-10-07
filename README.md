@@ -165,7 +165,7 @@ python teleop_hand_and_arm.py \
 
 ### Terminal 2 — Hand-tracked arms + controller walking
 
-This mode keeps hand tracking on the arms and enables high-level Unitree locomotion:
+Use `hybrid` to keep hand tracking on the arms while reading both Touch Plus controllers for high-level Unitree locomotion:
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
@@ -174,7 +174,7 @@ conda activate tv
 cd ~/Documents/fibo/project_humanoid/xr_teleoperate/teleop
 python teleop_hand_and_arm.py \
   --arm G1_29 \
-  --input-mode hand \
+  --input-mode hybrid \
   --motion \
   --locomotion-input quest \
   --img-server-ip 192.168.123.164 \
