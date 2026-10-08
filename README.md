@@ -2,12 +2,12 @@
 
 > Full original documentation: [README_old.md](README_old.md)
 
-Quest hand tracking controls the Unitree G1 arms and Inspire hands. Locomotion input is selectable with `--locomotion-input` (`quest` by default):
+Quest hand or controller tracking controls the Unitree G1 arms. Locomotion input is selectable with `--locomotion-input` (`quest` by default):
 
-- Right stick vertical: forward/backward
-- Right stick horizontal: strafe left/right
-- Left stick horizontal: yaw left/right
-- Left stick vertical: ignored
+- Left stick vertical: forward/backward
+- Left stick horizontal: strafe left/right
+- Right stick horizontal: yaw left/right
+- Right stick vertical: ignored
 
 - `quest`: Quest thumbsticks command high-level locomotion.
 - `unitree`: the native Unitree wireless controller remains responsible for locomotion; xr_teleoperate only monitors `rt/lowstate`.
@@ -163,18 +163,18 @@ python teleop_hand_and_arm.py \
   --image-transport zmq
 ```
 
-### Terminal 2 — Hand-tracked arms + controller walking
+### Terminal 2 — G1_23 controller-tracked arms + controller walking
 
-Use `hybrid` to keep hand tracking on the arms while reading both Touch Plus controllers for high-level Unitree locomotion:
+This is the official Unitree controller flow: Touch Plus 6DoF poses drive the existing arm IK while the same controllers provide locomotion input. Do not pass `--ee` for a standard G1_23 without dexterous hands.
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
 
 conda activate tv
-cd ~/Documents/fibo/project_humanoid/xr_teleoperate/teleop
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate/teleop
 python teleop_hand_and_arm.py \
-  --arm G1_29 \
-  --input-mode hybrid \
+  --arm G1_23 \
+  --input-mode controller \
   --motion \
   --locomotion-input quest \
   --img-server-ip 192.168.123.164 \
@@ -206,10 +206,10 @@ Unitree wireless controller -> native G1 motion system -> G1 legs
 Current maximum command scales:
 
 - Translation: `0.30`
-- Yaw: `0.15`
+- Yaw: `0.30`
 - Controller timeout: `0.5 s`
 
-Right **A** exits teleoperation. Pressing both thumbsticks requests damping mode.
+The left controller pose drives the left wrist target and the right controller pose drives the right wrist target. Right **A** exits teleoperation. Pressing both thumbsticks requests damping mode. If either controller pose becomes stale, the arms hold their last IK target; stale joystick axes command zero velocity.
 
 ## Quest connection
 
@@ -217,7 +217,7 @@ Right **A** exits teleoperation. Pressing both thumbsticks requests damping mode
 2. Open `https://<HOST_IP>:8012` in the Quest browser.
 3. Accept the certificate warning and select **Virtual Reality**.
 4. Allow hand/controller permissions.
-5. Align your hands with the robot’s initial arm pose.
+5. Align both controllers with the robot’s initial arm pose.
 6. Press **r** in the teleoperation terminal to start.
 7. Press **q** to quit.
 
@@ -228,12 +228,12 @@ This command starts no DDS client and sends nothing to the G1:
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate tv
-cd ~/Documents/fibo/project_humanoid/xr_teleoperate
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate
 
-python teleop/inspect_hybrid_input.py --frequency 10
+python teleop/inspect_hybrid_input.py --input-mode controller --frequency 10
 ```
 
-Verify that both controllers become active, centered sticks produce `Move(0, 0, 0)`, and stale input returns the affected axes to zero before running the physical motion-mode command.
+Move each controller separately and verify that only its corresponding `LEFT WRIST XYZ` or `RIGHT WRIST XYZ` value changes. Verify that both controllers and `ARM TRACKING` become active, the joysticks continue updating while the controllers move, centered sticks produce `Move(0, 0, 0)`, and stale input returns the affected axes to zero before running the physical motion-mode command.
 
 To inspect the Unitree-owned or no-locomotion paths without DDS or robot commands:
 

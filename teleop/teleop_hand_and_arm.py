@@ -20,7 +20,8 @@ from teleimager.image_client import ImageClient
 from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
-from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_velocity
+from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_tracking_fresh, controller_velocity
+from teleop.utils.xr_tracking_fallback import resolve_arm_ik_target
 from teleop.utils.unitree_remote_monitor import UnitreeRemoteMonitor
 from sshkeyboard import listen_keyboard, stop_listening
 
@@ -359,6 +360,7 @@ if __name__ == '__main__':
         head_img = None
         left_wrist_img = None
         right_wrist_img = None
+        last_sol_q = None
 
         # main loop. robot start to follow VR user's motion
         while not STOP:
@@ -438,7 +440,20 @@ if __name__ == '__main__':
 
             # solve ik using motor data and wrist pose, then use ik results to control arms.
             time_ik_start = time.time()
-            sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
+            sol_q, sol_tauff, last_sol_q = resolve_arm_ik_target(
+                tracking_ok=(
+                    args.input_mode != "controller"
+                    or controller_tracking_fresh(tele_data)
+                ),
+                left_wrist_pose=tele_data.left_wrist_pose,
+                right_wrist_pose=tele_data.right_wrist_pose,
+                current_lr_arm_q=current_lr_arm_q,
+                current_lr_arm_dq=current_lr_arm_dq,
+                arm_ik=arm_ik,
+                last_sol_q=last_sol_q,
+                tracking_fallback="hold",
+                frequency=args.frequency,
+            )
             time_ik_end = time.time()
             logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
             arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)

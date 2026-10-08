@@ -7,6 +7,7 @@ from teleop.utils.controller_locomotion import (
     CONTROLLER_YAW_SCALE,
     apply_controller_locomotion,
     controller_locomotion_enabled,
+    controller_tracking_fresh,
     locomotion_owner,
 )
 from teleop.utils.motion_switcher import LocoClientWrapper
@@ -74,15 +75,15 @@ class ControllerLocomotionTest(unittest.TestCase):
         yaw = CONTROLLER_YAW_SCALE
         cases = (
             ((0, 0), (0, 0), (0, 0, 0)),
-            ((0, 0), (0, -1), (translation, 0, 0)),
-            ((0, 0), (0, 1), (-translation, 0, 0)),
-            ((0, 0), (-1, 0), (0, translation, 0)),
-            ((0, 0), (1, 0), (0, -translation, 0)),
-            ((-1, 0), (0, 0), (0, 0, yaw)),
-            ((1, 0), (0, 0), (0, 0, -yaw)),
-            ((0, -1), (0, 0), (0, 0, 0)),
-            ((-1, 0), (0, -1), (translation, 0, yaw)),
-            ((1, 0), (-1, 0), (0, translation, -yaw)),
+            ((0, -1), (0, 0), (translation, 0, 0)),
+            ((0, 1), (0, 0), (-translation, 0, 0)),
+            ((-1, 0), (0, 0), (0, translation, 0)),
+            ((1, 0), (0, 0), (0, -translation, 0)),
+            ((0, 0), (-1, 0), (0, 0, yaw)),
+            ((0, 0), (1, 0), (0, 0, -yaw)),
+            ((0, 0), (0, -1), (0, 0, 0)),
+            ((-1, -1), (-1, 0), (translation, translation, yaw)),
+            ((1, 0), (1, 0), (0, -translation, -yaw)),
         )
         for left, right, expected in cases:
             with self.subTest(left=left, right=right):
@@ -90,16 +91,24 @@ class ControllerLocomotionTest(unittest.TestCase):
 
     def test_controller_freshness_is_independent(self):
         self.assert_move(
-            (-1, 0), (0, -1), (0.3, 0, 0), now=10.5,
+            (0, -1), (-1, 0), (0, 0, 0.3), now=10.5,
             left_updated_at=10.0, right_updated_at=10.4,
         )
         self.assert_move(
-            (-1, 0), (0, -1), (0, 0, 0.15), now=10.5,
+            (0, -1), (-1, 0), (0.3, 0, 0), now=10.5,
             left_updated_at=10.4, right_updated_at=10.0,
         )
         self.assert_move(
-            (-1, 0), (0, -1), (0, 0, 0), now=10.5,
+            (0, -1), (-1, 0), (0, 0, 0), now=10.5,
             left_updated_at=10.0, right_updated_at=10.0,
+        )
+
+    def test_arm_tracking_requires_both_controller_streams_to_be_fresh(self):
+        self.assertTrue(controller_tracking_fresh(tele_data(), now=10.1))
+        self.assertFalse(
+            controller_tracking_fresh(
+                tele_data(left_updated_at=9.5, right_updated_at=10.0), now=10.1
+            )
         )
 
     def test_damping_does_not_move_in_same_iteration(self):
@@ -121,13 +130,13 @@ class ControllerLocomotionTest(unittest.TestCase):
         client = FakeLocoClient()
         apply_controller_locomotion(
             tele_data(
-                (-1, 0), (0, -1), left_updated_at=9.5,
+                (0, -1), (-1, 0), left_updated_at=9.5,
                 left_pressed=True, right_pressed=True,
             ),
             client,
             now=10.1,
         )
-        self.assertEqual(client.calls, [("Move", 0.3, 0.0, 0.0)])
+        self.assertEqual(client.calls, [("Move", 0.0, 0.0, 0.3)])
 
     def test_a_button_exit_requires_fresh_input(self):
         fresh = FakeLocoClient()

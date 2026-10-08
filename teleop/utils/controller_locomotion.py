@@ -3,7 +3,7 @@ import time
 
 CONTROLLER_INPUT_TIMEOUT = 0.5
 CONTROLLER_VELOCITY_SCALE = 0.3
-CONTROLLER_YAW_SCALE = 0.15
+CONTROLLER_YAW_SCALE = 0.3
 LOCOMOTION_INPUTS = ("quest", "unitree", "none")
 
 
@@ -24,6 +24,15 @@ def controller_input_fresh(tele_data, now=None, side="right"):
     return 0.0 <= age < CONTROLLER_INPUT_TIMEOUT
 
 
+def controller_tracking_fresh(tele_data, now=None):
+    """Return whether both controller pose streams are fresh enough for arm IK."""
+    now = time.monotonic() if now is None else now
+    return (
+        controller_input_fresh(tele_data, now, "left")
+        and controller_input_fresh(tele_data, now, "right")
+    )
+
+
 def controller_velocity(tele_data, now=None):
     now = time.monotonic() if now is None else now
     left_fresh = controller_input_fresh(tele_data, now, "left")
@@ -31,9 +40,9 @@ def controller_velocity(tele_data, now=None):
     left = tele_data.left_ctrl_thumbstickValue
     right = tele_data.right_ctrl_thumbstickValue
     return (
-        -right[1] * CONTROLLER_VELOCITY_SCALE if right_fresh else 0.0,
-        -right[0] * CONTROLLER_VELOCITY_SCALE if right_fresh else 0.0,
-        -left[0] * CONTROLLER_YAW_SCALE if left_fresh else 0.0,
+        -left[1] * CONTROLLER_VELOCITY_SCALE if left_fresh else 0.0,
+        -left[0] * CONTROLLER_VELOCITY_SCALE if left_fresh else 0.0,
+        -right[0] * CONTROLLER_YAW_SCALE if right_fresh else 0.0,
     )
 
 
