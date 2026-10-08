@@ -23,6 +23,8 @@ Before using a physical G1:
 - Use a stand or gantry for the first test.
 - Keep the physical e-stop ready and use a second person as a spotter.
 - Test Quest input with the no-DDS inspector before enabling walking.
+- The program does not home arms automatically on shutdown. It requests an acknowledged zero-velocity Loco command, holds the latest fresh arm joint positions briefly, then stops its arm publisher. If zero velocity cannot be acknowledged, use the physical e-stop.
+- `LocoClient.Damp()` is a locomotion mode request, not an emergency stop. `--return-arms-home-on-exit` is an explicit opt-in for an orderly `q` or controller exit only; it is skipped after Ctrl+C, errors, or an unconfirmed locomotion stop.
 
 ## Installation
 
@@ -121,7 +123,7 @@ Click once inside the simulator window after it opens.
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate tv
-cd ~/Documents/fibo/project_humanoid/xr_teleoperate/teleop
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate/teleop
 
 python teleop_hand_and_arm.py \
   --arm G1_29 \
@@ -155,7 +157,7 @@ This mode uses Quest hand tracking for the arms and does not enable controller w
 source ~/miniconda3/etc/profile.d/conda.sh
 
 conda activate tv
-cd ~/Documents/fibo/project_humanoid/xr_teleoperate/teleop
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate/teleop
 python teleop_hand_and_arm.py \
   --arm G1_29 \
   --input-mode hand \
@@ -208,6 +210,7 @@ Current maximum command scales:
 - Translation: `0.30`
 - Yaw: `0.30`
 - Controller timeout: `0.5 s`
+- Loco RPC timeout: `0.1 s` by default; configurable from `0.01` to `0.5` seconds with `--locomotion-rpc-timeout`. RPC work runs on a single bounded worker so the IK/control loop does not wait for acknowledgements.
 
 The left controller pose drives the left wrist target and the right controller pose drives the right wrist target. Right **A** exits teleoperation. Pressing both thumbsticks requests damping mode. If either controller pose becomes stale, the arms hold their last IK target; stale joystick axes command zero velocity.
 

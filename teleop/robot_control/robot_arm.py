@@ -23,7 +23,15 @@ G1_23_Num_Motors = 35
 H1_2_Num_Motors = 35
 H1_Num_Motors = 20
 H2_Num_Motors = 35
- 
+
+G1_23_STATE_TIMEOUT = 5.0
+G1_23_STATE_MAX_AGE = 0.5
+G1_23_ARM_POSITION_LIMITS = np.array([
+    [-3.0892, 2.6704], [-1.5882, 2.2515], [-2.618, 2.618],
+    [-1.0472, 2.0944], [-1.972222054, 1.972222054],
+    [-3.0892, 2.6704], [-2.2515, 1.5882], [-2.618, 2.618],
+    [-1.0472, 2.0944], [-1.972222054, 1.972222054],
+], dtype=np.float64)
 
 class MotorState:
     def __init__(self):
@@ -37,6 +45,7 @@ class G1_29_LowState:
 class G1_23_LowState:
     def __init__(self):
         self.motor_state = [MotorState() for _ in range(G1_23_Num_Motors)]
+        self.mode_machine = None
 
 class H1_2_LowState:
     def __init__(self):
@@ -62,6 +71,7 @@ def _zero_lowstate(state_cls):
 class DataBuffer:
     def __init__(self):
         self.data = None
+        self.updated_at = 0.0
         self.lock = threading.Lock()
 
     def GetData(self):
@@ -71,6 +81,11 @@ class DataBuffer:
     def SetData(self, data):
         with self.lock:
             self.data = data
+            self.updated_at = time.monotonic()
+
+    def GetDataWithTimestamp(self):
+        with self.lock:
+            return self.data, self.updated_at
 
 class _ArmControllerLifecycle:
     def _init_lifecycle(self):
@@ -98,6 +113,20 @@ class _ArmControllerLifecycle:
         if not stopped:
             logger_mp.error(f"[{type(self).__name__}] controller threads did not stop within {timeout}s.")
         return stopped
+
+    def hold_current_position(self, max_state_age=0.5):
+        """Seed a fresh measured arm pose as target; shutdown never homes implicitly."""
+        snapshot, updated_at = self.lowstate_buffer.GetDataWithTimestamp()
+        age = time.monotonic() - updated_at
+        if snapshot is None or not 0.0 <= age < max_state_age:
+            logger_mp.error(f"[{type(self).__name__}] Cannot confirm a fresh arm hold target.")
+            return False
+        q = np.asarray(self.get_current_dual_arm_q(), dtype=np.float64)
+        if q.shape != np.asarray(self.q_target).shape or not np.isfinite(q).all():
+            logger_mp.error(f"[{type(self).__name__}] Cannot hold invalid arm joint state.")
+            return False
+        self.ctrl_dual_arm(q.copy(), np.zeros_like(q))
+        return True
 
     close = stop
 
@@ -398,7 +427,7 @@ class G1_23_ArmController(_ArmControllerLifecycle):
         self.motion_mode = motion_mode
 
         logger_mp.info("Initialize G1_23_ArmController...")
-        self.q_target = np.zeros(10)
+        self.q_target = None
         self.tauff_target = np.zeros(10)
 
         self.kp_high = 300.0
@@ -431,18 +460,47 @@ class G1_23_ArmController(_ArmControllerLifecycle):
         self.subscribe_thread.daemon = True
         self.subscribe_thread.start()
 
-        while not self.lowstate_buffer.GetData():
-            time.sleep(0.1)
-            logger_mp.warning("[G1_23_ArmController] Waiting to subscribe dds...")
+        state_deadline = time.monotonic() + G1_23_STATE_TIMEOUT
+        while True:
+            lowstate, updated_at = self.lowstate_buffer.GetDataWithTimestamp()
+            if (
+                lowstate is not None
+                and 0.0 <= time.monotonic() - updated_at < G1_23_STATE_MAX_AGE
+            ):
+                break
+            if time.monotonic() >= state_deadline:
+                self._stop_event.set()
+                self.subscribe_thread.join(timeout=1.0)
+                raise RuntimeError(
+                    "G1_23 arm controller requires fresh valid lowstate before publishing."
+                )
+            logger_mp.warning("[G1_23_ArmController] Waiting for fresh valid lowstate...")
+            time.sleep(0.05)
         logger_mp.info("[G1_23_ArmController] Subscribe dds ok.")
 
         # initialize hg's lowcmd msg
         self.crc = CRC()
         self.msg = unitree_hg_msg_dds__LowCmd_()
         self.msg.mode_pr = 0
-        self.msg.mode_machine = self.get_mode_machine()
+        self.msg.mode_machine = getattr(lowstate, "mode_machine", None)
+        if self.msg.mode_machine is None:
+            self._stop_event.set()
+            self.subscribe_thread.join(timeout=1.0)
+            raise RuntimeError("G1_23 lowstate is missing mode_machine.")
 
         self.all_motor_q = self.get_current_motor_q()
+        self.q_target = self.get_current_dual_arm_q().copy()
+        if (
+            self.all_motor_q.shape != (G1_23_Num_Motors,)
+            or self.q_target.shape != (len(G1_23_JointArmIndex),)
+            or not np.isfinite(self.all_motor_q).all()
+            or not np.isfinite(self.q_target).all()
+            or np.any(self.q_target < G1_23_ARM_POSITION_LIMITS[:, 0])
+            or np.any(self.q_target > G1_23_ARM_POSITION_LIMITS[:, 1])
+        ):
+            self._stop_event.set()
+            self.subscribe_thread.join(timeout=1.0)
+            raise RuntimeError("G1_23 lowstate contains invalid arm joint positions.")
         logger_mp.info(f"Current all body motor state q:\n{self.all_motor_q} \n")
         logger_mp.info(f"Current two arms motor state q:\n{self.get_current_dual_arm_q()}\n")
         logger_mp.info("Lock all joints except two arms...")
@@ -468,8 +526,8 @@ class G1_23_ArmController(_ArmControllerLifecycle):
         logger_mp.info("Lock OK!")
 
         # initialize publish thread
-        self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
+        self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.publish_thread.daemon = True
         self.publish_thread.start()
 
@@ -478,13 +536,33 @@ class G1_23_ArmController(_ArmControllerLifecycle):
     def _subscribe_motor_state(self):
         while not self._stop_event.is_set():
             msg = self.lowstate_subscriber.Read()
-            if msg is not None:
+            if msg is not None and self._valid_g1_23_state(msg):
                 lowstate = G1_23_LowState()
+                lowstate.mode_machine = msg.mode_machine
                 for id in range(G1_23_Num_Motors):
                     lowstate.motor_state[id].q  = msg.motor_state[id].q
                     lowstate.motor_state[id].dq = msg.motor_state[id].dq
                 self.lowstate_buffer.SetData(lowstate)
             self._stop_event.wait(0.002)
+
+    @staticmethod
+    def _valid_g1_23_state(msg):
+        try:
+            if msg.mode_machine is None or len(msg.motor_state) != G1_23_Num_Motors:
+                return False
+            q = np.asarray([motor.q for motor in msg.motor_state], dtype=np.float64)
+            dq = np.asarray([motor.dq for motor in msg.motor_state], dtype=np.float64)
+            arm_q = q[[joint.value for joint in G1_23_JointArmIndex]]
+            return (
+                q.shape == (G1_23_Num_Motors,)
+                and dq.shape == (G1_23_Num_Motors,)
+                and np.isfinite(q).all()
+                and np.isfinite(dq).all()
+                and np.all(arm_q >= G1_23_ARM_POSITION_LIMITS[:, 0])
+                and np.all(arm_q <= G1_23_ARM_POSITION_LIMITS[:, 1])
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
 
     def clip_arm_q_target(self, target_q, velocity_limit):
         current_q = self.get_current_dual_arm_q()
@@ -499,6 +577,15 @@ class G1_23_ArmController(_ArmControllerLifecycle):
 
         while not self._stop_event.is_set():
             start_time = time.time()
+
+            _lowstate, updated_at = self.lowstate_buffer.GetDataWithTimestamp()
+            if (
+                _lowstate is None
+                or not 0.0 <= time.monotonic() - updated_at < G1_23_STATE_MAX_AGE
+            ):
+                logger_mp.error("[G1_23_ArmController] Lowstate stale; stopping arm command publishing.")
+                self._stop_event.set()
+                break
 
             with self.ctrl_lock:
                 arm_q_target     = self.q_target

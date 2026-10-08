@@ -40,6 +40,7 @@ STOP           = False  # Enable to begin system exit procedure
 READY          = False  # Ready to (1) enter START state, (2) enter RECORD_RUNNING state
 RECORD_RUNNING = False  # True if [Recording]
 RECORD_TOGGLE  = False  # Toggle recording state
+EXIT_REASON = None
 #  -------        ---------                -----------                -----------            ---------
 #   state          [Ready]      ==>        [Recording]     ==>         [AutoSave]     -->     [Ready]
 #  -------        ---------      |         -----------      |         -----------      |     ---------
@@ -53,12 +54,13 @@ RECORD_TOGGLE  = False  # Toggle recording state
 #  --> auto  : Auto-transition after saving data.
 
 def on_press(key):
-    global STOP, START, RECORD_TOGGLE
+    global STOP, START, RECORD_TOGGLE, EXIT_REASON
     if key == 'r':
         START = True
     elif key == 'q':
         START = False
         STOP = True
+        EXIT_REASON = "keyboard_quit"
     elif key == 's' and START == True:
         RECORD_TOGGLE = True
     else:
@@ -109,10 +111,14 @@ if __name__ == '__main__':
     parser.add_argument('--motion', action = 'store_true', help = 'Enable motion control mode')   
     parser.add_argument('--locomotion-input', choices=['quest', 'unitree', 'none'], default='quest',
                         help='Select locomotion input source (default: quest)')
+    parser.add_argument('--locomotion-rpc-timeout', type=float, default=0.1,
+                        help='Bounded LocoClient RPC timeout in seconds (0.01 to 0.5).')
     parser.add_argument('--headless', action='store_true', help='Enable headless mode (no display)')
     parser.add_argument('--sim', action = 'store_true', help = 'Enable isaac simulation mode')
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')
     parser.add_argument('--affinity', action = 'store_true', help = 'Enable high priority and set CPU affinity mode')
+    parser.add_argument('--return-arms-home-on-exit', action='store_true',
+                        help='Explicitly return arms to zero on orderly q/controller exit; never on errors or Ctrl-C.')
     # record mode and task info
     parser.add_argument('--record', action = 'store_true', help = 'Enable data recording mode')
     parser.add_argument('--task-dir', type = str, default = './utils/data/', help = 'path to save data')
@@ -122,6 +128,8 @@ if __name__ == '__main__':
     parser.add_argument('--task-steps', type = str, default = 'step1: do this; step2: do that;', help = 'task steps for recording at json file')
 
     args = parser.parse_args()
+    if not 0.01 <= args.locomotion_rpc_timeout <= 0.5:
+        parser.error("--locomotion-rpc-timeout must be between 0.01 and 0.5 seconds")
     hand_tracking_input = args.input_mode in ('hand', 'hybrid')
     controller_locomotion = controller_locomotion_enabled(args.motion, args.arm, args.locomotion_input)
     logger_mp.info(f"Locomotion source: {args.locomotion_input.upper()}")
@@ -129,7 +137,7 @@ if __name__ == '__main__':
 
     arm_ctrl = ipc_server = listen_keyboard_thread = None
     img_client = tv_wrapper = sim_state_subscriber = recorder = None
-    motion_switcher = ee_ctrl = remote_monitor = None
+    motion_switcher = ee_ctrl = remote_monitor = loco_wrapper = None
     debug_mode_was_entered = False
 
     try:
@@ -191,7 +199,7 @@ if __name__ == '__main__':
         # motion mode (G1: Regular mode R1+X, not Running mode R2+A)
         if args.motion:
             if controller_locomotion:
-                loco_wrapper = LocoClientWrapper()
+                loco_wrapper = LocoClientWrapper(rpc_timeout_s=args.locomotion_rpc_timeout)
         else:
             if args.sim:
                 logger_mp.info("Simulation mode: skip physical robot debug-mode switch.")
@@ -433,6 +441,7 @@ if __name__ == '__main__':
                 if apply_controller_locomotion(tele_data, loco_wrapper):
                     START = False
                     STOP = True
+                    EXIT_REASON = "controller_exit"
 
             # get current robot state data.
             current_lr_arm_q  = arm_ctrl.get_current_dual_arm_q()
@@ -612,18 +621,41 @@ if __name__ == '__main__':
             logger_mp.debug(f"main process sleep: {sleep_time}")
 
     except KeyboardInterrupt:
+        EXIT_REASON = "keyboard_interrupt"
         logger_mp.info("⛔ KeyboardInterrupt, exiting program...")
     except Exception:
+        EXIT_REASON = "exception"
         import traceback
         logger_mp.error(traceback.format_exc())
     finally:
         STOP = True
+        locomotion_stopped = loco_wrapper is None
+        try:
+            if loco_wrapper is not None:
+                locomotion_stopped = loco_wrapper.stop_motion()
+        except Exception as e:
+            locomotion_stopped = False
+            logger_mp.error(
+                f"Failed to confirm zero locomotion command: {e}. Use the physical E-stop."
+            )
+
         arm_stopped = arm_ctrl is None
         try:
             if arm_ctrl is not None:
-                arm_ctrl.ctrl_dual_arm_go_home()
+                return_home = (
+                    args.return_arms_home_on_exit
+                    and EXIT_REASON in ("keyboard_quit", "controller_exit")
+                    and locomotion_stopped
+                )
+                if return_home:
+                    arm_ctrl.ctrl_dual_arm_go_home()
+                elif arm_ctrl.hold_current_position():
+                    # Let the 250 Hz publisher send the measured hold target before it stops.
+                    time.sleep(max(0.02, 3.0 * getattr(arm_ctrl, "control_dt", 0.01)))
+                else:
+                    logger_mp.error("Arm hold was not confirmed; stopping arm publisher without homing.")
         except Exception as e:
-            logger_mp.error(f"Failed to ctrl_dual_arm_go_home: {e}")
+            logger_mp.error(f"Failed to set arm shutdown target: {e}")
 
         try:
             if arm_ctrl is not None:
@@ -652,6 +684,12 @@ if __name__ == '__main__':
             )
         except Exception as e:
             logger_mp.error(f"Failed to restore G1 mode: {e}")
+
+        try:
+            if loco_wrapper is not None and not loco_wrapper.close():
+                logger_mp.error("Locomotion RPC worker did not stop within its bounded timeout.")
+        except Exception as e:
+            logger_mp.error(f"Failed to stop locomotion RPC worker: {e}")
         
         try:
             if ipc_server is not None:

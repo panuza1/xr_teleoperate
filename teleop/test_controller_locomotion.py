@@ -1,5 +1,7 @@
 import unittest
 import struct
+import threading
+import time
 from types import SimpleNamespace
 
 from teleop.utils.controller_locomotion import (
@@ -23,6 +25,41 @@ class FakeLocoClient:
 
     def Damp(self):
         self.calls.append(("Damp",))
+
+
+class FakeRpcClient:
+    def __init__(self, responses=(), delay=0.0, release=None):
+        self.responses = list(responses)
+        self.delay = delay
+        self.release = release
+        self.started = threading.Event()
+        self.calls = []
+        self.timeout = None
+
+    def SetTimeout(self, timeout):
+        self.timeout = timeout
+
+    def Init(self):
+        pass
+
+    def _response(self):
+        self.started.set()
+        if self.release is not None:
+            self.release.wait()
+        elif self.delay:
+            time.sleep(self.delay)
+        response = self.responses.pop(0) if self.responses else 0
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def SetVelocity(self, vx, vy, vyaw, duration=1.0):
+        self.calls.append(("SetVelocity", vx, vy, vyaw, duration))
+        return self._response()
+
+    def SetFsmId(self, fsm_id):
+        self.calls.append(("SetFsmId", fsm_id))
+        return self._response()
 
 
 def tele_data(left=(0.0, 0.0), right=(0.0, 0.0),
@@ -105,11 +142,10 @@ class ControllerLocomotionTest(unittest.TestCase):
 
     def test_arm_tracking_requires_both_controller_streams_to_be_fresh(self):
         self.assertTrue(controller_tracking_fresh(tele_data(), now=10.1))
-        self.assertFalse(
-            controller_tracking_fresh(
-                tele_data(left_updated_at=9.5, right_updated_at=10.0), now=10.1
-            )
-        )
+        stale = tele_data(left_updated_at=9.5, right_updated_at=10.0)
+        self.assertFalse(controller_tracking_fresh(stale, now=10.1))
+        stale.left_controller_data_updated_at = 10.05
+        self.assertTrue(controller_tracking_fresh(stale, now=10.1))
 
     def test_damping_does_not_move_in_same_iteration(self):
         client = FakeLocoClient()
@@ -121,10 +157,81 @@ class ControllerLocomotionTest(unittest.TestCase):
         self.assertEqual(client.calls, [("Damp",)])
 
     def test_loco_wrapper_damp_delegates_to_sdk_client(self):
-        wrapper = LocoClientWrapper.__new__(LocoClientWrapper)
-        wrapper.client = FakeLocoClient()
-        wrapper.Damp()
-        self.assertEqual(wrapper.client.calls, [("Damp",)])
+        client = FakeRpcClient()
+        wrapper = LocoClientWrapper(client=client)
+        self.assertTrue(wrapper.Damp())
+        self.wait_acknowledged(wrapper, True)
+        self.assertEqual(client.calls, [("SetFsmId", 1)])
+        self.assertTrue(wrapper.close())
+
+    def wait_acknowledged(self, wrapper, value, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if wrapper.last_acknowledged is value:
+                return
+            time.sleep(0.001)
+        self.fail(f"Loco RPC did not reach acknowledgement state {value!r}")
+
+    def wait_calls(self, client, count, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if len(client.calls) >= count:
+                return
+            time.sleep(0.001)
+        self.fail(f"Loco RPC did not make {count} calls")
+
+    def test_loco_wrapper_uses_acknowledged_sdk_methods_and_clamps_velocity(self):
+        client = FakeRpcClient()
+        wrapper = LocoClientWrapper(client=client)
+        self.assertEqual(client.timeout, 0.1)
+        self.assertTrue(wrapper.Move(0.8, -0.8, 0.25))
+        self.wait_acknowledged(wrapper, True)
+        self.assertEqual(client.calls[0], ("SetVelocity", 0.3, -0.3, 0.25, 1.0))
+        self.assertTrue(wrapper.Damp())
+        self.wait_calls(client, 2)
+        self.assertEqual(client.calls[1], ("SetFsmId", 1))
+        self.assertTrue(wrapper.stop_motion())
+        self.wait_calls(client, 3)
+        self.assertEqual(client.calls[2], ("SetVelocity", 0.0, 0.0, 0.0, 1.0))
+        self.assertTrue(wrapper.close())
+
+    def test_loco_wrapper_reports_failed_ack_and_recovers(self):
+        client = FakeRpcClient([TimeoutError("no response"), 17, 0])
+        wrapper = LocoClientWrapper(rpc_timeout_s=0.05, client=client)
+        self.assertTrue(wrapper.Move(0.1, 0.0, 0.0))
+        self.wait_acknowledged(wrapper, False)
+        self.assertEqual(wrapper.consecutive_failures, 1)
+        self.assertFalse(wrapper.stop_motion())
+        self.assertEqual(wrapper.consecutive_failures, 2)
+        self.assertTrue(wrapper.stop_motion())
+        self.assertEqual(wrapper.consecutive_failures, 0)
+        self.assertTrue(wrapper.close())
+
+    def test_loco_rpc_does_not_block_control_loop_and_stop_wait_is_bounded(self):
+        release = threading.Event()
+        client = FakeRpcClient(release=release)
+        wrapper = LocoClientWrapper(rpc_timeout_s=0.01, client=client)
+        started = time.monotonic()
+        self.assertTrue(wrapper.Move(0.1, 0.0, 0.0))
+        self.assertLess(time.monotonic() - started, 0.05)
+        self.assertTrue(client.started.wait(0.5))
+        started = time.monotonic()
+        self.assertFalse(wrapper.stop_motion())
+        self.assertLess(time.monotonic() - started, 0.15)
+        self.assertFalse(wrapper.close())
+        release.set()
+        deadline = time.monotonic() + 0.5
+        while wrapper._worker.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertFalse(wrapper._worker.is_alive())
+
+    def test_loco_wrapper_rejects_unbounded_timeout_and_nonfinite_velocity(self):
+        with self.assertRaises(ValueError):
+            LocoClientWrapper(rpc_timeout_s=10.0, client=FakeRpcClient())
+        wrapper = LocoClientWrapper(client=FakeRpcClient())
+        self.assertFalse(wrapper.Move(float("nan"), 0.0, 0.0))
+        self.assertEqual(wrapper.client.calls, [])
+        self.assertTrue(wrapper.close())
 
     def test_stale_thumbstick_press_does_not_damp(self):
         client = FakeLocoClient()
@@ -137,6 +244,16 @@ class ControllerLocomotionTest(unittest.TestCase):
             now=10.1,
         )
         self.assertEqual(client.calls, [("Move", 0.0, 0.0, 0.3)])
+
+    def test_tracking_loss_requests_zero_velocity(self):
+        client = FakeLocoClient()
+        apply_controller_locomotion(
+            tele_data((0, -1), (-1, 0), left_updated_at=9.5,
+                      right_updated_at=9.5),
+            client,
+            now=10.1,
+        )
+        self.assertEqual(client.calls, [("Move", 0.0, 0.0, 0.0)])
 
     def test_a_button_exit_requires_fresh_input(self):
         fresh = FakeLocoClient()
