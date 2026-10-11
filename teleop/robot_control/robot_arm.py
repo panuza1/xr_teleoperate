@@ -421,7 +421,7 @@ class G1_29_JointIndex(IntEnum):
     kNotUsedJoint5 = 34
 
 class G1_23_ArmController(_ArmControllerLifecycle):
-    def __init__(self, motion_mode = False, simulation_mode = False):
+    def __init__(self, motion_mode = False, simulation_mode = False, lowcmd_topic = None):
         self._init_lifecycle()
         self.simulation_mode = simulation_mode
         self.motion_mode = motion_mode
@@ -446,7 +446,9 @@ class G1_23_ArmController(_ArmControllerLifecycle):
         self._gradual_time = None
 
         
-        if self.motion_mode:
+        if lowcmd_topic is not None:
+            self.lowcmd_publisher = ChannelPublisher(lowcmd_topic, hg_LowCmd)
+        elif self.motion_mode:
             self.lowcmd_publisher = ChannelPublisher(kTopicLowCommand_Motion, hg_LowCmd)
         else:
             self.lowcmd_publisher = ChannelPublisher(kTopicLowCommand_Debug, hg_LowCmd)

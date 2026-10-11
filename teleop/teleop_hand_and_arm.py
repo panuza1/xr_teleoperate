@@ -10,9 +10,12 @@ import os
 import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, os.path.join(current_dir, "televuer", "src"))
 sys.path.append(parent_dir)
 
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize # dds 
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher # dds
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import WirelessController_
+from unitree_sdk2py.idl.default import unitree_go_msg_dds__WirelessController_
 from televuer import TeleVuerWrapper
 from teleop.robot_control.robot_arm import G1_29_ArmController, G1_23_ArmController, H1_2_ArmController, H1_ArmController, H2_ArmController
 from teleop.robot_control.robot_arm_ik import G1_29_ArmIK, G1_23_ArmIK, H1_2_ArmIK, H1_ArmIK, H2_ArmIK
@@ -20,8 +23,8 @@ from teleimager.image_client import ImageClient
 from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
-from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_tracking_fresh, controller_velocity
-from teleop.utils.xr_tracking_fallback import resolve_arm_ik_target
+from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_tracking_fresh, controller_velocity, fill_duet_wireless_controller
+from teleop.utils.xr_tracking_fallback import resolve_arm_ik_target, xr_tracking_ok
 from teleop.utils.unitree_remote_monitor import UnitreeRemoteMonitor
 from sshkeyboard import listen_keyboard, stop_listening
 
@@ -97,7 +100,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # basic control parameters
     parser.add_argument('--frequency', type = float, default = 30.0, help = 'control and record \'s frequency')
-    parser.add_argument('--input-mode', type=str, choices=['hand', 'controller', 'hybrid'], default='hand', help='Select XR device input tracking source')
+    parser.add_argument('--input-mode', type=str, choices=['hand', 'controller', 'hybrid', 'body-controller'], default='hand', help='Select XR device input tracking source')
     parser.add_argument('--display-mode', type=str, choices=['immersive', 'ego', 'pass-through'], default='immersive', help='Select XR device display mode')
     parser.add_argument('--arm', type=str, choices=['G1_29', 'G1_23', 'H1_2', 'H1', 'H2'], default='G1_29', help='Select arm controller')
     parser.add_argument('--arm-reach-gain', type=float, default=1.0, help='Shoulder-relative wrist reach gain for G1_29')
@@ -130,14 +133,26 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if not 0.01 <= args.locomotion_rpc_timeout <= 0.5:
         parser.error("--locomotion-rpc-timeout must be between 0.01 and 0.5 seconds")
+    if args.sim and args.network_interface not in (None, "lo"):
+        parser.error("--sim requires the loopback DDS interface 'lo'")
+    if args.sim and args.motion:
+        parser.error("--motion cannot be used with --sim; MuJoCo does not provide G1 LocoClient")
+    if args.input_mode == "body-controller" and args.ee:
+        parser.error("--input-mode body-controller is arms-only and cannot be combined with --ee")
     hand_tracking_input = args.input_mode in ('hand', 'hybrid')
+    body_tracking_input = args.input_mode == 'body-controller'
     controller_locomotion = controller_locomotion_enabled(args.motion, args.arm, args.locomotion_input)
+    duet_sim = (
+        args.sim and args.arm == "G1_23" and body_tracking_input
+        and args.locomotion_input == "quest"
+    )
     logger_mp.info(f"Locomotion source: {args.locomotion_input.upper()}")
     logger_mp.debug(f"args: {args}")
 
     arm_ctrl = ipc_server = listen_keyboard_thread = None
     img_client = tv_wrapper = sim_state_subscriber = recorder = None
     motion_switcher = ee_ctrl = remote_monitor = loco_wrapper = None
+    duet_wireless_publisher = duet_wireless_message = None
     debug_mode_was_entered = False
 
     try:
@@ -150,6 +165,13 @@ if __name__ == '__main__':
         if args.locomotion_input == "unitree" and args.arm.startswith("G1"):
             remote_monitor = UnitreeRemoteMonitor(logger=logger_mp).start()
 
+        if duet_sim:
+            duet_wireless_publisher = ChannelPublisher("rt/wirelesscontroller", WirelessController_)
+            duet_wireless_publisher.Init()
+            duet_wireless_message = unitree_go_msg_dds__WirelessController_()
+            duet_wireless_message.ry = 0.73
+            duet_wireless_publisher.Write(duet_wireless_message)
+
         # ipc communication mode. client usage: see utils/ipc.py
         if args.ipc:
             ipc_server = IPC_Server(on_press=on_press,get_state=get_state)
@@ -161,10 +183,18 @@ if __name__ == '__main__':
                                                       daemon=True)
             listen_keyboard_thread.start()
 
-        # image client
-        img_client = ImageClient(host=args.img_server_ip, request_bgr=True)
-        camera_config = img_client.get_cam_config()
-        logger_mp.debug(f"Camera config: {camera_config}")
+        # Passthrough uses Quest's cameras directly and does not need an image server.
+        if args.display_mode == 'pass-through':
+            img_client = None
+            camera_config = {
+                name: {'enable_zmq': False, 'enable_webrtc': False, 'binocular': True,
+                       'image_shape': (480, 1280), 'webrtc_port': 0}
+                for name in ('head_camera', 'left_wrist_camera', 'right_wrist_camera')
+            }
+        else:
+            img_client = ImageClient(host=args.img_server_ip, request_bgr=True)
+            camera_config = img_client.get_cam_config()
+            logger_mp.debug(f"Camera config: {camera_config}")
         head_camera_config = camera_config['head_camera']
         use_webrtc = head_camera_config['enable_webrtc']
         use_zmq = head_camera_config['enable_zmq']
@@ -183,7 +213,8 @@ if __name__ == '__main__':
 
         # televuer_wrapper: obtain hand pose data from the XR device and transmit the robot's head camera image to the XR device.
         tv_wrapper = TeleVuerWrapper(use_hand_tracking=hand_tracking_input,
-                                     use_controller_input=args.input_mode in ("controller", "hybrid") or controller_locomotion,
+                                     use_body_tracking=body_tracking_input,
+                                     use_controller_input=args.input_mode in ("controller", "hybrid", "body-controller") or controller_locomotion,
                                      binocular=camera_config['head_camera']['binocular'],
                                      img_shape=camera_config['head_camera']['image_shape'],
                                      # maybe should decrease fps for better performance?
@@ -223,7 +254,11 @@ if __name__ == '__main__':
             arm_ctrl = G1_29_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
         elif args.arm == "G1_23":
             arm_ik = G1_23_ArmIK()
-            arm_ctrl = G1_23_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
+            arm_ctrl = G1_23_ArmController(
+                motion_mode=args.motion,
+                simulation_mode=args.sim,
+                lowcmd_topic="rt/arm_targets" if duet_sim else None,
+            )
         elif args.arm == "H1_2":
             arm_ik = H1_2_ArmIK()
             arm_ctrl = H1_2_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
@@ -437,7 +472,10 @@ if __name__ == '__main__':
                 xr_motion_data_ready.value = tele_data.motion_data_ready
             
             # high level control
-            if controller_locomotion:
+            if duet_sim:
+                fill_duet_wireless_controller(duet_wireless_message, tele_data)
+                duet_wireless_publisher.Write(duet_wireless_message)
+            elif controller_locomotion:
                 if apply_controller_locomotion(tele_data, loco_wrapper):
                     START = False
                     STOP = True
@@ -451,8 +489,26 @@ if __name__ == '__main__':
             time_ik_start = time.time()
             sol_q, sol_tauff, last_sol_q = resolve_arm_ik_target(
                 tracking_ok=(
-                    args.input_mode != "controller"
-                    or controller_tracking_fresh(tele_data)
+                    xr_tracking_ok(
+                        tele_data.left_wrist_pose,
+                        tele_data.right_wrist_pose,
+                        tele_data.body_data_updated_at,
+                        time.monotonic(),
+                        0.5,
+                    )
+                    if body_tracking_input
+                    else controller_tracking_fresh(tele_data)
+                    if args.input_mode == "controller"
+                    else (
+                        xr_tracking_ok(
+                            tele_data.left_wrist_pose,
+                            tele_data.right_wrist_pose,
+                            tele_data.hand_data_updated_at,
+                            time.monotonic(),
+                            0.5,
+                        )
+                        if args.sim else True
+                    )
                 ),
                 left_wrist_pose=tele_data.left_wrist_pose,
                 right_wrist_pose=tele_data.right_wrist_pose,
@@ -629,6 +685,12 @@ if __name__ == '__main__':
         logger_mp.error(traceback.format_exc())
     finally:
         STOP = True
+        if duet_wireless_publisher is not None:
+            duet_wireless_message.lx = 0.0
+            duet_wireless_message.ly = 0.0
+            duet_wireless_message.rx = 0.0
+            duet_wireless_message.keys = 0
+            duet_wireless_publisher.Write(duet_wireless_message)
         locomotion_stopped = loco_wrapper is None
         try:
             if loco_wrapper is not None:

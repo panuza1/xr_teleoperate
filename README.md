@@ -99,6 +99,50 @@ sudo ufw allow 8012
 
 ## Simulation
 
+### G1_23 arms in MuJoCo
+
+This runs the checked-in `scene_23dof.xml` with a fixed base and the existing G1_23 arm IK/controller. Arm commands and state use `rt/lowcmd` and `rt/lowstate` on DDS domain 1 and interface `lo`; teleop is explicitly in `--sim` mode. Quest passthrough uses the headset cameras, so no image server is needed.
+
+First, in a separate terminal, check the headset event streams without DDS or robot commands:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate tv
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate
+python teleop/inspect_hybrid_input.py --input-mode body-controller --locomotion-input quest
+```
+
+Enable Quest Browser's WebXR Experiments flag, then open `https://<HOST_IP>:8012` and enter VR. Hold both Touch Controllers, move both arms, and operate both sticks. `BODY TRACKING`, `LEFT CONTROLLER`, and `RIGHT CONTROLLER` must remain active while the six shoulder/elbow/wrist values and joystick values update. This check requires the headset.
+
+Then use these two terminals:
+
+Terminal 1 — G1_23 MuJoCo simulation:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate unitree
+cd ~/Documents/fibo/project_humanoid/unitree_mujoco/simulate_python
+python g1_23_arm_sim.py
+```
+
+Terminal 2 — Quest body wrists to both arms:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate tv
+cd ~/Documents/fibo/project_humanoid/g1_inspire_workspace/xr_teleoperate/teleop
+python teleop_hand_and_arm.py \
+  --arm G1_23 \
+  --input-mode body-controller \
+  --display-mode pass-through \
+  --locomotion-input none \
+  --sim
+```
+
+Press `r` to start arm tracking and `q` to exit. `BODY_MOVE` wrist poses drive the existing G1_23 IK; controller poses are ignored and controller sticks remain available. Stale body data holds the last arm target, while stale controller data produces zero velocity. The simulation is arms-only and fixed-base because this local MuJoCo repository has no compatible G1_23 walking policy. Do not add `--motion`; MuJoCo does not implement the physical G1 `LocoClient`.
+
+### Existing Isaac Lab simulation
+
 Install [unitree_sim_isaaclab](https://github.com/unitreerobotics/unitree_sim_isaaclab) and its `unitree_sim_env` environment by following that repository’s installation instructions.
 
 ### Terminal 1 — Start the simulator

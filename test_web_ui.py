@@ -56,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
             "motion": False, "display_mode": "pass-through", "frequency": 50,
             "img_server_ip": "127.0.0.1", "image_transport": "webrtc",
             "network_interface": "lo", "headless": True, "sim": True,
-            "ipc": True, "affinity": True, "record": True,
+            "ipc": True, "affinity": True, "return_arms_home_on_exit": True, "record": True,
             "task_dir": "/tmp/data", "task_name": "test", "task_goal": "goal",
             "task_desc": "description", "task_steps": "one; two",
         }

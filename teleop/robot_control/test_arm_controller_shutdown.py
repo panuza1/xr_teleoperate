@@ -14,7 +14,8 @@ from teleop.robot_control.test_arm_only_message_equivalence import _module_stubs
 class _Publisher:
     instances = []
 
-    def __init__(self, _topic, _message_type):
+    def __init__(self, topic, _message_type):
+        self.topic = topic
         self.writes = 0
         self.first_command = None
         self.wrote = threading.Event()
@@ -168,6 +169,16 @@ class ArmControllerShutdownTest(unittest.TestCase):
         expected = tuple((index - 17) * 0.01 for index in arm_ids)
         np.testing.assert_allclose(controller.q_target, expected)
         np.testing.assert_allclose([first_command[index] for index in arm_ids], expected)
+        self.assertTrue(controller.stop())
+
+    def test_g1_23_can_publish_only_to_duet_arm_targets(self):
+        _InlineThread.seed_state = True
+        _InlineThread.stale_state = False
+        with patch.object(self.module.threading, "Thread", _InlineThread):
+            controller = self.module.G1_23_ArmController(
+                simulation_mode=True, lowcmd_topic="rt/arm_targets"
+            )
+        self.assertEqual(_Publisher.instances[-1].topic, "rt/arm_targets")
         self.assertTrue(controller.stop())
 
     def test_g1_23_rejects_missing_or_stale_state_before_publishing(self):

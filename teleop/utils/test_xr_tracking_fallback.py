@@ -57,6 +57,24 @@ class XRTrackingFallbackTests(unittest.TestCase):
         np.testing.assert_allclose(updated_last, last_sol_q)
         np.testing.assert_allclose(sol_tauff, np.zeros(3))
 
+    def test_stale_body_tracking_holds_last_arm_target(self):
+        last_sol_q = np.array([0.2, -0.1, 0.3], dtype=np.float64)
+        tracking_ok = xr_tracking_ok(
+            _valid_pose(), _valid_pose(), arm_pose_updated_at=9.0, now=10.0, tracking_timeout=0.5
+        )
+        sol_q, _, _ = resolve_arm_ik_target(
+            tracking_ok=tracking_ok,
+            left_wrist_pose=_valid_pose(),
+            right_wrist_pose=_valid_pose(),
+            current_lr_arm_q=np.zeros(3),
+            current_lr_arm_dq=np.zeros(3),
+            arm_ik=DummyArmIK(),
+            last_sol_q=last_sol_q,
+            tracking_fallback="hold",
+            frequency=30.0,
+        )
+        np.testing.assert_allclose(sol_q, last_sol_q)
+
     def test_home_fallback_moves_toward_zero_with_bounded_step(self):
         last_sol_q = np.array([1.0, -1.0, 0.5], dtype=np.float64)
         sol_q, _, updated_last = resolve_arm_ik_target(

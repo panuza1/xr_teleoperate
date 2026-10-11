@@ -7,9 +7,11 @@ from types import SimpleNamespace
 from teleop.utils.controller_locomotion import (
     CONTROLLER_VELOCITY_SCALE,
     CONTROLLER_YAW_SCALE,
+    DUET_STAND_HEIGHT,
     apply_controller_locomotion,
     controller_locomotion_enabled,
     controller_tracking_fresh,
+    fill_duet_wireless_controller,
     locomotion_owner,
 )
 from teleop.utils.motion_switcher import LocoClientWrapper
@@ -139,6 +141,38 @@ class ControllerLocomotionTest(unittest.TestCase):
             (0, -1), (-1, 0), (0, 0, 0), now=10.5,
             left_updated_at=10.0, right_updated_at=10.0,
         )
+
+    def test_duet_wireless_mapping_matches_keyboard(self):
+        message = SimpleNamespace()
+        fill_duet_wireless_controller(
+            message, tele_data(left=(-1.0, -1.0), right=(-1.0, 0.0)), now=10.1
+        )
+        self.assertEqual(
+            (message.lx, message.ly, message.rx, message.ry, message.keys),
+            (-0.3, 0.4, -0.6, DUET_STAND_HEIGHT, 0),
+        )
+
+    def test_duet_wireless_stale_sides_are_zeroed_independently(self):
+        message = SimpleNamespace()
+        fill_duet_wireless_controller(
+            message,
+            tele_data(
+                left=(1.0, -1.0), right=(1.0, 0.0),
+                left_updated_at=9.0, right_updated_at=10.0,
+            ),
+            now=10.1,
+        )
+        self.assertEqual((message.lx, message.ly, message.rx), (0.0, 0.0, 0.6))
+
+        fill_duet_wireless_controller(
+            message,
+            tele_data(
+                left=(1.0, -1.0), right=(1.0, 0.0),
+                left_updated_at=10.0, right_updated_at=9.0,
+            ),
+            now=10.1,
+        )
+        self.assertEqual((message.lx, message.ly, message.rx), (0.3, 0.4, 0.0))
 
     def test_arm_tracking_requires_both_controller_streams_to_be_fresh(self):
         self.assertTrue(controller_tracking_fresh(tele_data(), now=10.1))
