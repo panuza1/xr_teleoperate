@@ -34,9 +34,21 @@ def resolve_arm_ik_target(
     tracking_fallback,
     frequency,
     home_ramp_rad_s=0.5,
+    left_tracking_ok=None,
+    right_tracking_ok=None,
 ):
     """Compute arm IK targets or apply hold/home safety fallback when tracking is lost."""
-    if tracking_ok:
+    side_tracking_provided = left_tracking_ok is not None or right_tracking_ok is not None
+    if side_tracking_provided and (left_tracking_ok or right_tracking_ok):
+        sol_q, sol_tauff = arm_ik.solve_ik(
+            left_wrist_pose if left_tracking_ok else None,
+            right_wrist_pose if right_tracking_ok else None,
+            current_lr_arm_q,
+            current_lr_arm_dq,
+        )
+        return np.asarray(sol_q).copy(), np.asarray(sol_tauff).copy(), np.asarray(sol_q).copy()
+
+    if tracking_ok and not side_tracking_provided:
         sol_q, sol_tauff = arm_ik.solve_ik(
             left_wrist_pose,
             right_wrist_pose,

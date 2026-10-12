@@ -50,12 +50,26 @@ def main():
             vx, vy, vyaw = controller_velocity(data, now) if args.locomotion_input == "quest" else (0.0, 0.0, 0.0)
             poses = data.body_poses
             xyz = lambda name: poses[BODY_JOINT_INDEX[name]][:3, 3].round(3) if poses is not None else "waiting"
+            if args.input_mode == "controller":
+                wrist_summary = (
+                    f"LEFT CONTROLLER WRIST XYZ: {data.left_wrist_pose[:3, 3].round(3)} | "
+                    f"ROT: {data.left_wrist_pose[:3, :3].round(2)} | "
+                    f"RIGHT CONTROLLER WRIST XYZ: {data.right_wrist_pose[:3, 3].round(3)} | "
+                    f"ROT: {data.right_wrist_pose[:3, :3].round(2)} | "
+                )
+                body_summary = ""
+            else:
+                wrist_summary = (
+                    f"LEFT BODY TRACKING WRIST XYZ: {xyz('left-hand-wrist-twist')} | "
+                    f"RIGHT BODY TRACKING WRIST XYZ: {xyz('right-hand-wrist-twist')} | "
+                )
+                body_summary = (
+                    f"BODY TRACKING: {'active' if 0.0 <= body_age < 0.5 else 'stale'} ({body_age:.3f}s) | "
+                    f"LEFT SHOULDER XYZ: {xyz('left-shoulder')} | LEFT ELBOW XYZ: {xyz('left-arm-lower')} | "
+                    f"RIGHT SHOULDER XYZ: {xyz('right-shoulder')} | RIGHT ELBOW XYZ: {xyz('right-arm-lower')} | "
+                )
             print(
-                f"BODY TRACKING: {'active' if 0.0 <= body_age < 0.5 else 'stale'} ({body_age:.3f}s) | "
-                f"LEFT SHOULDER XYZ: {xyz('left-shoulder')} | LEFT ELBOW XYZ: {xyz('left-arm-lower')} | "
-                f"LEFT WRIST XYZ: {xyz('left-hand-wrist-twist')} | "
-                f"RIGHT SHOULDER XYZ: {xyz('right-shoulder')} | RIGHT ELBOW XYZ: {xyz('right-arm-lower')} | "
-                f"RIGHT WRIST XYZ: {xyz('right-hand-wrist-twist')} | "
+                body_summary + wrist_summary +
                 f"LEFT CONTROLLER: {'active' if controller_input_fresh(data, now, 'left') else 'stale'} ({left_age:.3f}s) | "
                 f"RIGHT CONTROLLER: {'active' if controller_input_fresh(data, now, 'right') else 'stale'} ({right_age:.3f}s) | "
                 f"LEFT JOYSTICK: {data.left_ctrl_thumbstickValue} | RIGHT JOYSTICK: {data.right_ctrl_thumbstickValue} | "

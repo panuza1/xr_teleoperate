@@ -23,7 +23,7 @@ from teleimager.image_client import ImageClient
 from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
 from teleop.utils.motion_switcher import MotionSwitcher, LocoClientWrapper
-from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_locomotion_enabled, controller_tracking_fresh, controller_velocity, fill_duet_wireless_controller
+from teleop.utils.controller_locomotion import apply_controller_locomotion, controller_input_fresh, controller_locomotion_enabled, controller_tracking_fresh, controller_velocity, fill_duet_wireless_controller
 from teleop.utils.xr_tracking_fallback import resolve_arm_ik_target, xr_tracking_ok
 from teleop.utils.unitree_remote_monitor import UnitreeRemoteMonitor
 from sshkeyboard import listen_keyboard, stop_listening
@@ -509,6 +509,14 @@ if __name__ == '__main__':
                         )
                         if args.sim else True
                     )
+                ),
+                left_tracking_ok=(
+                    controller_input_fresh(tele_data, side="left")
+                    if args.input_mode == "controller" else None
+                ),
+                right_tracking_ok=(
+                    controller_input_fresh(tele_data, side="right")
+                    if args.input_mode == "controller" else None
                 ),
                 left_wrist_pose=tele_data.left_wrist_pose,
                 right_wrist_pose=tele_data.right_wrist_pose,

@@ -1,4 +1,5 @@
 import casadi                                                                       
+import copy
 import meshcat.geometry as mg
 import numpy as np
 import pinocchio as pin                             
@@ -7,6 +8,7 @@ from pinocchio import casadi as cpin
 from pinocchio.visualize import MeshcatVisualizer   
 import os
 import sys
+from pathlib import Path
 import pickle
 import logging_mp
 logger_mp = logging_mp.getLogger(__name__)
@@ -14,6 +16,7 @@ parent2_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 sys.path.append(parent2_dir)
 
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
+from teleop.robot_control.robot_arm import G1_23_ARM_POSITION_LIMITS
 
 class G1_29_ArmIK:
     def __init__(self, Unit_Test = False, Visualization = False, reach_gain = 1.0):
@@ -327,21 +330,22 @@ class G1_29_ArmIK:
             return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
         
 class G1_23_ArmIK:
-    def __init__(self, Unit_Test = False, Visualization = False):
+    def __init__(self, Unit_Test = False, Visualization = False, position_error_tolerance=0.05):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
+
+        if not np.isfinite(position_error_tolerance) or position_error_tolerance <= 0:
+            raise ValueError("position_error_tolerance must be finite and greater than zero")
+        self.position_error_tolerance = float(position_error_tolerance)
+        self.last_ik_status = {"accepted": False, "reason": "no solution yet"}
 
         self.Unit_Test = Unit_Test
         self.Visualization = Visualization
 
-        # fixed cache file path
-        self.cache_path = "g1_23_model_cache.pkl"
-
-        if not self.Unit_Test:
-            self.urdf_path = '../assets/g1/g1_body23.urdf'
-            self.model_dir = '../assets/g1/'
-        else:
-            self.urdf_path = '../../assets/g1/g1_body23.urdf'
-            self.model_dir = '../../assets/g1/'
+        # Derive paths from __file__ using pathlib so they work regardless of cwd
+        _repo_root = Path(__file__).resolve().parents[2]
+        self.urdf_path = str(_repo_root / 'assets' / 'g1' / 'g1_body23.urdf')
+        self.model_dir = str(_repo_root / 'assets' / 'g1')
+        self.cache_path = str(_repo_root / 'teleop' / 'g1_23_model_cache.pkl')
 
         # Try loading cache first
         if os.path.exists(self.cache_path) and (not self.Visualization):
@@ -427,8 +431,9 @@ class G1_23_ArmIK:
             [self.cq, self.cTf_l, self.cTf_r],
             [
                 casadi.vertcat(
-                    cpin.log3(self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T),
-                    cpin.log3(self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T)
+                    # The chordal residual stays smooth when a wrist target matches the current rotation.
+                    casadi.reshape((self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T - np.eye(3)) / np.sqrt(2.0), 9, 1),
+                    casadi.reshape((self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T - np.eye(3)) / np.sqrt(2.0), 9, 1),
                 )
             ],
         )
@@ -547,63 +552,164 @@ class G1_23_ArmIK:
         return robot_left_pose, robot_right_pose
 
     def solve_ik(self, left_wrist, right_wrist, current_lr_arm_motor_q = None, current_lr_arm_motor_dq = None):
-        if current_lr_arm_motor_q is not None:
-            self.init_data = current_lr_arm_motor_q
-        self.opti.set_initial(self.var_q, self.init_data)
+        def hold(reason, residuals=(None, None)):
+            self.last_ik_status = {
+                "accepted": False, "left_accepted": False, "right_accepted": False,
+                "left_residual_m": residuals[0], "right_residual_m": residuals[1],
+                "reason": reason,
+            }
+            return measured_q.copy(), np.zeros(10, dtype=np.float64)
 
-        # left_wrist, right_wrist = self.scale_arms(left_wrist, right_wrist)
-        if self.Visualization:
-            self.vis.viewer['L_ee_target'].set_transform(left_wrist)   # for visualization
-            self.vis.viewer['R_ee_target'].set_transform(right_wrist)  # for visualization
+        if current_lr_arm_motor_q is None:
+            self.last_ik_status = {"accepted": False, "reason": "measured joint state unavailable"}
+            raise ValueError("G1_23 IK requires measured joints for a safe hold target")
+        try:
+            measured_q = np.asarray(current_lr_arm_motor_q, dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            self.last_ik_status = {"accepted": False, "reason": "invalid measured joint state"}
+            raise ValueError("G1_23 IK cannot form a safe hold from invalid measured joints")
+        if (
+            measured_q.shape != (10,) or not np.isfinite(measured_q).all()
+            or np.any(measured_q < G1_23_ARM_POSITION_LIMITS[:, 0])
+            or np.any(measured_q > G1_23_ARM_POSITION_LIMITS[:, 1])
+        ):
+            self.last_ik_status = {"accepted": False, "reason": "invalid measured joint state"}
+            raise ValueError("G1_23 IK cannot form a safe hold from invalid measured joints")
+        def valid_pose(value):
+            try:
+                pose = np.asarray(value, dtype=np.float64)
+            except (TypeError, ValueError):
+                return None
+            if (
+                pose.shape != (4, 4) or not np.isfinite(pose).all()
+                or not np.allclose(pose[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6)
+                or not np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=1e-3)
+                or not np.isclose(np.linalg.det(pose[:3, :3]), 1.0, atol=1e-3)
+            ):
+                return None
+            return pose
 
-        self.opti.set_value(self.param_tf_l, left_wrist)
-        self.opti.set_value(self.param_tf_r, right_wrist)
-        self.opti.set_value(self.var_q_last, self.init_data) # for smooth
+        poses = [valid_pose(left_wrist), valid_pose(right_wrist)]
+        pose_valid = [pose is not None for pose in poses]
+        accepted = pose_valid.copy()
+        reasons = [None if valid else "invalid wrist pose" for valid in pose_valid]
+        if not any(accepted):
+            return hold("both wrist poses invalid")
+        if not all(accepted):
+            try:
+                current_data = self.reduced_robot.model.createData()
+                pin.framesForwardKinematics(self.reduced_robot.model, current_data, measured_q)
+                current_poses = (
+                    np.array(current_data.oMf[self.L_hand_id].homogeneous),
+                    np.array(current_data.oMf[self.R_hand_id].homogeneous),
+                )
+            except Exception as exc:
+                return hold(f"measured FK failure: {type(exc).__name__}")
+            # The dual-arm objective needs both targets; only the invalid side uses measured FK, then its joints are held below.
+            poses = [pose if pose is not None else current_poses[i] for i, pose in enumerate(poses)]
+        left_wrist, right_wrist = poses
+        if current_lr_arm_motor_dq is not None:
+            try:
+                measured_dq = np.asarray(current_lr_arm_motor_dq, dtype=np.float64).reshape(-1)
+            except (TypeError, ValueError):
+                return hold("invalid measured joint velocity")
+            if measured_dq.shape != (10,) or not np.isfinite(measured_dq).all():
+                return hold("invalid measured joint velocity")
+
+        lower = np.maximum(self.reduced_robot.model.lowerPositionLimit, G1_23_ARM_POSITION_LIMITS[:, 0])
+        upper = np.minimum(self.reduced_robot.model.upperPositionLimit, G1_23_ARM_POSITION_LIMITS[:, 1])
+
+        def residuals(q):
+            data = self.reduced_robot.model.createData()
+            pin.framesForwardKinematics(self.reduced_robot.model, data, q)
+            return np.array([
+                np.linalg.norm(data.oMf[self.L_hand_id].translation - left_wrist[:3, 3]),
+                np.linalg.norm(data.oMf[self.R_hand_id].translation - right_wrist[:3, 3]),
+            ])
 
         try:
-            sol = self.opti.solve()
-            # sol = self.opti.solve_limited()
-
-            sol_q = self.opti.value(self.var_q)
-            self.smooth_filter.add_data(sol_q)
-            sol_q = self.smooth_filter.filtered_data
-
-            if current_lr_arm_motor_dq is not None:
-                v = current_lr_arm_motor_dq * 0.0
-            else:
-                v = (sol_q - self.init_data) * 0.0
-
-            self.init_data = sol_q
-
-            sol_tauff = pin.rnea(self.reduced_robot.model, self.reduced_robot.data, sol_q, v, np.zeros(self.reduced_robot.model.nv))
-
             if self.Visualization:
-                self.vis.display(sol_q)  # for visualization
+                self.vis.viewer['L_ee_target'].set_transform(left_wrist)
+                self.vis.viewer['R_ee_target'].set_transform(right_wrist)
+            self.opti.set_initial(self.var_q, measured_q)
+            self.opti.set_value(self.param_tf_l, left_wrist)
+            self.opti.set_value(self.param_tf_r, right_wrist)
+            self.opti.set_value(self.var_q_last, measured_q)
+            self.opti.solve()
+            if not self.opti.stats().get("success", False):
+                return hold("IK solver reported failure")
+            raw_q = np.asarray(self.opti.value(self.var_q), dtype=np.float64).reshape(-1)
+            if raw_q.shape != (10,) or not np.isfinite(raw_q).all():
+                return hold("IK returned non-finite or malformed joints")
 
-            return sol_q, sol_tauff
-        
-        except Exception as e:
-            logger_mp.error(f"ERROR in convergence, plotting debug info.{e}")
+            for side, start in enumerate((0, 5)):
+                if accepted[side] and (
+                    np.any(raw_q[start:start + 5] < lower[start:start + 5])
+                    or np.any(raw_q[start:start + 5] > upper[start:start + 5])
+                ):
+                    accepted[side], reasons[side] = False, "joint limit violation"
+            raw_residuals = residuals(raw_q)
+            for side in range(2):
+                if accepted[side] and raw_residuals[side] > self.position_error_tolerance:
+                    accepted[side], reasons[side] = False, "position residual exceeded tolerance"
 
-            sol_q = self.opti.debug.value(self.var_q)
-            self.smooth_filter.add_data(sol_q)
-            sol_q = self.smooth_filter.filtered_data
+            trial_filter = None
+            for _ in range(3):
+                candidate = raw_q.copy()
+                for side, start in enumerate((0, 5)):
+                    if not accepted[side]:
+                        candidate[start:start + 5] = measured_q[start:start + 5]
+                trial_filter = copy.deepcopy(self.smooth_filter)
+                trial_filter.add_data(candidate)
+                filtered_q = np.asarray(trial_filter.filtered_data, dtype=np.float64).copy()
+                for side, start in enumerate((0, 5)):
+                    if not accepted[side]:
+                        filtered_q[start:start + 5] = measured_q[start:start + 5]
+                if filtered_q.shape != (10,) or not np.isfinite(filtered_q).all():
+                    return hold("smoothed IK joints are invalid", tuple(raw_residuals))
+                filtered_residuals = residuals(filtered_q)
+                newly_rejected = False
+                for side in range(2):
+                    if accepted[side] and filtered_residuals[side] > self.position_error_tolerance:
+                        accepted[side], reasons[side] = False, "smoothed position residual exceeded tolerance"
+                        newly_rejected = True
+                if not newly_rejected:
+                    break
 
-            if current_lr_arm_motor_dq is not None:
-                v = current_lr_arm_motor_dq * 0.0
-            else:
-                v = (sol_q - self.init_data) * 0.0
+            if not any(accepted):
+                return hold("both wrist targets rejected", tuple(raw_residuals))
+            if np.any(filtered_q < lower) or np.any(filtered_q > upper):
+                return hold("smoothed IK joints violate limits", tuple(raw_residuals))
 
-            self.init_data = sol_q
+            velocity = np.zeros(10, dtype=np.float64)
+            tau = np.asarray(pin.rnea(
+                self.reduced_robot.model, self.reduced_robot.data, filtered_q,
+                velocity, np.zeros(self.reduced_robot.model.nv),
+            ), dtype=np.float64).reshape(-1)
+            if tau.shape != (10,) or not np.isfinite(tau).all():
+                return hold("IK feedforward torque is invalid", tuple(raw_residuals))
+            for side, start in enumerate((0, 5)):
+                if not accepted[side]:
+                    tau[start:start + 5] = 0.0
 
-            sol_tauff = pin.rnea(self.reduced_robot.model, self.reduced_robot.data, sol_q, v, np.zeros(self.reduced_robot.model.nv))
-
-            logger_mp.error(f"sol_q:{sol_q} \nmotorstate: \n{current_lr_arm_motor_q} \nleft_pose: \n{left_wrist} \nright_pose: \n{right_wrist}")
+            final_residuals = residuals(filtered_q)
+            self.smooth_filter = trial_filter
+            self.init_data = filtered_q.copy()
+            self.last_ik_status = {
+                "accepted": any(accepted), "left_accepted": accepted[0],
+                "right_accepted": accepted[1],
+                "left_residual_m": float(final_residuals[0]) if pose_valid[0] else None,
+                "right_residual_m": float(final_residuals[1]) if pose_valid[1] else None,
+                "left_reason": reasons[0], "right_reason": reasons[1],
+                "reason": "accepted" if all(accepted) else "partial hold",
+            }
             if self.Visualization:
-                self.vis.display(sol_q)  # for visualization
+                self.vis.display(filtered_q)
+            return filtered_q, tau
 
-            # return sol_q, sol_tauff
-            return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
+        except Exception as exc:
+            logger_mp.error(f"G1_23 IK rejected; holding measured joints: {exc}")
+            return hold(f"IK failure: {type(exc).__name__}")
 
 
 class H1_2_ArmIK:

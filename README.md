@@ -315,3 +315,139 @@ help text therefore stay aligned with the launcher. Every field remains
 editable after applying a preset; modified values have field-level reset and
 validation controls, and uncommon future flags can be appended through Extra
 CLI Arguments.
+
+## Real G1 Controller Teleoperation — Phase 5
+
+**Physical motion was not tested or authorized by this preparation.** Use the
+`tv` environment. The arm path is controller-only and does not require an
+end-effector argument. Do not start motor publishing until the network, live
+lowstate, physical robot variant, operating mode, and emergency-stop checks
+below have been confirmed by the operator.
+
+### Wired network and read-only state
+
+The wired adapter observed for this host is `enp43s0`; it reported carrier but
+NetworkManager showed it disconnected and it had no active IPv4 address. A
+saved inactive profile named `unitree_g1` specifies host address
+`192.168.123.99/24` with no gateway, but it is not bound to a particular
+interface and an address-conflict check was unavailable (`arping` is not
+installed). Treat it as a candidate existing host assignment until the
+operator verifies the exact robot network. The host was on Wi-Fi
+`172.20.10.4/28`, and `192.168.123.164` routed through Wi-Fi. This repo uses
+`.164` as an image-server default, so it is not a verified DDS endpoint or
+physical variant identifier. Do not route DDS through Wi-Fi.
+
+After the robot subnet is confirmed and a duplicate-address probe reports no
+conflict, the existing wired profile can be activated and reversed without
+editing its IP settings:
+
+```bash
+arping -D -I enp43s0 -c 3 192.168.123.99
+nmcli connection up unitree_g1 ifname enp43s0
+ip -br addr
+ip route
+ip route get <verified-robot-ip>
+# To restore the prior disconnected state:
+nmcli connection down unitree_g1
+```
+
+These activation and rollback commands were not run. Confirm the Wi-Fi default
+route remains unchanged after activation before any DDS inspection.
+
+Read-only host checks:
+
+```bash
+ip -br addr
+ip route
+ip route get <verified-robot-ip>
+ip link show enp43s0
+nmcli device show enp43s0
+cat /sys/class/net/enp43s0/carrier
+nmcli connection show unitree_g1
+```
+
+After the host address and dedicated wired link are confirmed, run the bounded
+SDK2 subscriber (domain 0, `rt/lowstate` only). It reports receive rate/times,
+`mode_machine`, all motor q/dq finiteness, arm q/dq, and raw motor status words.
+Exit status is nonzero on no data, stale data, inconsistent mode, or invalid
+state. It never creates a publisher or calls a motion service:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate tv
+python teleop/robot_control/g1_23_readonly_state.py --interface enp43s0 --duration 10
+```
+
+Do not treat a 35-slot message as proof of 35 physical joints or proof of the
+G1_23 variant. Confirm the exact variant from the robot’s authoritative
+configuration and reconcile observed state with the official SDK G1 index
+map. Expected G1_23 arm slots are left `15–19`, right `22–26`; confirm the
+observed `mode_machine` is supported before proceeding.
+
+### Offline Quest-to-IK preview
+
+This uses synthetic controller poses, the existing Televuer transform and the
+real G1_23 model/IK. It constructs no DDS participant or publisher and sends no
+commands. The unreachable-left case must reject that side and hold its
+synthetic nominal seed while keeping a valid right-side target:
+
+```bash
+python teleop/robot_control/g1_23_dry_run.py --scenario reachable
+python teleop/robot_control/g1_23_dry_run.py --scenario unreachable-left
+```
+
+The default configurable Cartesian residual ceiling is 0.05 m: targets at the
+boundary pass and targets above it are rejected in the offline tests. This is
+a software starting value, not a measured G1 calibration tolerance; no robot
+accuracy or workspace margin was established in this phase.
+
+For Quest input alone, the existing inspector has no DDS or robot connection:
+
+```bash
+python teleop/inspect_hybrid_input.py --input-mode controller --locomotion-input none --duration 30
+```
+
+### Operator-controlled trial stages — not run by this preparation
+
+Proceed one stage at a time. Stage A must pass on the actual wired G1 link.
+Before any arm trial, confirm the verified G1_23 variant and mode, have an
+operator beside the supported/restraint-ready robot, clear nearby people and
+obstacles, verify an independently accessible physical E-stop, and ensure no
+other arm controller is active.
+
+**Stage A — read-only lowstate:** run the subscriber above and record fresh
+message rate, timestamps, `mode_machine`, state finiteness, and the physical
+variant evidence. Stop if any field is unknown or stale.
+
+**Stage B — arm-only command, operator-controlled:** this starts the existing
+`rt/arm_sdk` publisher after fresh lowstate validation. The controller seeds
+its initial arm target from measured q and starts publishing that hold before
+the operator presses `r`. Motion mode also sets arm SDK weight slot 29 to 1.0
+on its first write. The exact effect of enabling this SDK path on this robot
+has not been observed. Do not launch this command until Stage A and the
+mode/variant checks pass and the operator is ready to take responsibility for
+the arm command path:
+
+```bash
+python teleop/teleop_hand_and_arm.py --arm G1_23 --input-mode controller --motion --locomotion-input none --display-mode pass-through
+```
+
+Only after observing safe single-arm small movements, recovery, and shutdown
+should the operator test the other arm and then both arms. Do not use
+`--return-arms-home-on-exit` unless a home motion is separately intended and
+supervised.
+
+**Stage D — combined arm and walking, gated on all arm-only tests:**
+
+```bash
+python teleop/teleop_hand_and_arm.py --arm G1_23 --input-mode controller --motion --locomotion-input quest --display-mode pass-through
+```
+
+Quest tracking older than 0.5 seconds holds the last arm target; stale
+joystick axes request zero velocity. Loss of `rt/lowstate` stops arm publishing
+after the controller’s 0.5-second state timeout. On shutdown the program
+requests a fresh measured-position hold, sends it briefly, and stops its
+publisher. The robot’s behavior after publisher shutdown and its independent
+watchdog response to lost DDS remain unverified. `Damp`, a zero-velocity
+request, and keyboard quit are not emergency stops; keep the physical E-stop
+accessible and follow the operator’s recovery procedure.
