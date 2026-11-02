@@ -423,13 +423,20 @@ class G1_23_ArmIK:
                 )
             ],
         )
+        # Chordal residual avoids non-finite symbolic log3 derivatives in controller poses.
         self.rotational_error = casadi.Function(
             "rotational_error",
             [self.cq, self.cTf_l, self.cTf_r],
             [
                 casadi.vertcat(
-                    cpin.log3(self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T),
-                    cpin.log3(self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T),
+                    casadi.reshape(
+                        (self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T - np.eye(3)) / np.sqrt(2.0),
+                        9, 1,
+                    ),
+                    casadi.reshape(
+                        (self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T - np.eye(3)) / np.sqrt(2.0),
+                        9, 1,
+                    ),
                 )
             ],
         )

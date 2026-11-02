@@ -4,6 +4,7 @@ from unittest.mock import patch
 from pathlib import Path
 import sys
 
+import casadi
 import numpy as np
 import pinocchio as pin
 
@@ -307,6 +308,31 @@ class G123ControllerIKTest(unittest.TestCase):
         np.testing.assert_allclose(held_tau, 0.0)
         np.testing.assert_allclose(self.ik.init_data, seed_before)
         self.assertEqual(self.ik.smooth_filter._data_queue, filter_before)
+
+    def test_rotation_cost_derivatives_are_finite_with_one_stationary_wrist(self):
+        ik = self.ik
+        cost = casadi.sumsqr(ik.rotational_error(ik.cq, ik.cTf_l, ik.cTf_r))
+        derivatives = casadi.Function(
+            "rotation_cost_derivatives", [ik.cq, ik.cTf_l, ik.cTf_r],
+            [casadi.gradient(cost, ik.cq), casadi.hessian(cost, ik.cq)[0]],
+        )
+        zero = np.zeros(10)
+        for side in (0, 1):
+            for angle in (0.0, 0.8, np.pi - 1e-6):
+                with self.subTest(side=side, angle=angle):
+                    targets = self.fk_targets(zero)
+                    rotation_x = np.array([
+                        [1.0, 0.0, 0.0],
+                        [0.0, np.cos(angle), -np.sin(angle)],
+                        [0.0, np.sin(angle), np.cos(angle)],
+                    ])
+                    targets[side][:3, :3] = rotation_x @ targets[side][:3, :3]
+                    data = self.teleop_targets(*targets)
+                    gradient, hessian = derivatives(
+                        zero, data.left_wrist_pose, data.right_wrist_pose
+                    )
+                    self.assertTrue(np.isfinite(np.array(gradient)).all())
+                    self.assertTrue(np.isfinite(np.array(hessian)).all())
 
     def test_rotation_with_one_stationary_wrist_keeps_ik_solver_valid(self):
         zero = np.zeros(10)
