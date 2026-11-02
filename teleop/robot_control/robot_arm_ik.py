@@ -330,12 +330,9 @@ class G1_29_ArmIK:
             return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
         
 class G1_23_ArmIK:
-    def __init__(self, Unit_Test = False, Visualization = False, position_error_tolerance=0.05):
+    def __init__(self, Unit_Test = False, Visualization = False):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
 
-        if not np.isfinite(position_error_tolerance) or position_error_tolerance <= 0:
-            raise ValueError("position_error_tolerance must be finite and greater than zero")
-        self.position_error_tolerance = float(position_error_tolerance)
         self.last_ik_status = {"accepted": False, "reason": "no solution yet"}
 
         self.Unit_Test = Unit_Test
@@ -431,9 +428,8 @@ class G1_23_ArmIK:
             [self.cq, self.cTf_l, self.cTf_r],
             [
                 casadi.vertcat(
-                    # The chordal residual stays smooth when a wrist target matches the current rotation.
-                    casadi.reshape((self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T - np.eye(3)) / np.sqrt(2.0), 9, 1),
-                    casadi.reshape((self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T - np.eye(3)) / np.sqrt(2.0), 9, 1),
+                    cpin.log3(self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T),
+                    cpin.log3(self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T),
                 )
             ],
         )
@@ -649,32 +645,19 @@ class G1_23_ArmIK:
                 ):
                     accepted[side], reasons[side] = False, "joint limit violation"
             raw_residuals = residuals(raw_q)
-            for side in range(2):
-                if accepted[side] and raw_residuals[side] > self.position_error_tolerance:
-                    accepted[side], reasons[side] = False, "position residual exceeded tolerance"
 
-            trial_filter = None
-            for _ in range(3):
-                candidate = raw_q.copy()
-                for side, start in enumerate((0, 5)):
-                    if not accepted[side]:
-                        candidate[start:start + 5] = measured_q[start:start + 5]
-                trial_filter = copy.deepcopy(self.smooth_filter)
-                trial_filter.add_data(candidate)
-                filtered_q = np.asarray(trial_filter.filtered_data, dtype=np.float64).copy()
-                for side, start in enumerate((0, 5)):
-                    if not accepted[side]:
-                        filtered_q[start:start + 5] = measured_q[start:start + 5]
-                if filtered_q.shape != (10,) or not np.isfinite(filtered_q).all():
-                    return hold("smoothed IK joints are invalid", tuple(raw_residuals))
-                filtered_residuals = residuals(filtered_q)
-                newly_rejected = False
-                for side in range(2):
-                    if accepted[side] and filtered_residuals[side] > self.position_error_tolerance:
-                        accepted[side], reasons[side] = False, "smoothed position residual exceeded tolerance"
-                        newly_rejected = True
-                if not newly_rejected:
-                    break
+            candidate = raw_q.copy()
+            for side, start in enumerate((0, 5)):
+                if not accepted[side]:
+                    candidate[start:start + 5] = measured_q[start:start + 5]
+            trial_filter = copy.deepcopy(self.smooth_filter)
+            trial_filter.add_data(candidate)
+            filtered_q = np.asarray(trial_filter.filtered_data, dtype=np.float64).copy()
+            for side, start in enumerate((0, 5)):
+                if not accepted[side]:
+                    filtered_q[start:start + 5] = measured_q[start:start + 5]
+            if filtered_q.shape != (10,) or not np.isfinite(filtered_q).all():
+                return hold("smoothed IK joints are invalid", tuple(raw_residuals))
 
             if not any(accepted):
                 return hold("both wrist targets rejected", tuple(raw_residuals))

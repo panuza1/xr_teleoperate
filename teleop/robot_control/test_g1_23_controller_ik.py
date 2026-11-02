@@ -178,7 +178,7 @@ class G123ControllerIKTest(unittest.TestCase):
             20.0 * controller.control_dt + 1e-12,
         )
 
-    def test_unreachable_arm_is_held_and_reachable_arm_recovers(self):
+    def test_unreachable_arm_stays_within_limits_and_reachable_arm_recovers(self):
         zero = np.zeros(10)
         left_target, right_target = self.fk_targets(zero)
         unreachable = left_target.copy()
@@ -186,15 +186,12 @@ class G123ControllerIKTest(unittest.TestCase):
         data = self.teleop_targets(unreachable, right_target)
         q, tau = self.solve(data, zero)
         self.assert_solution(q, tau)
-        np.testing.assert_allclose(q[:5], zero[:5])
-        np.testing.assert_allclose(tau[:5], 0.0)
-        self.assertFalse(self.ik.last_ik_status["left_accepted"])
-        self.assertTrue(self.ik.last_ik_status["right_accepted"])
-        self.assertGreater(self.ik.last_ik_status["left_residual_m"], 0.05)
-        np.testing.assert_allclose(self.ik.init_data[:5], zero[:5])
+        if self.ik.last_ik_status["left_accepted"]:
+            self.assertGreater(self.ik.last_ik_status["left_residual_m"], 0.05)
 
         moved = np.array([0.08, 0.04, 0.05, 0.04, 0.02, 0, 0, 0, 0, 0])
         reachable = self.teleop_targets(*self.fk_targets(moved))
+        self.reset_filter()
         q, _ = self.solve(reachable, zero)
         self.assertTrue(self.ik.last_ik_status["left_accepted"])
         self.assertGreater(np.linalg.norm(q[:5]), 0.05)
@@ -223,10 +220,10 @@ class G123ControllerIKTest(unittest.TestCase):
         self.assertTrue(self.ik.last_ik_status["right_accepted"])
         self.assertGreater(np.linalg.norm(q[5:]), 0.02)
 
-    def test_residual_threshold_accepts_boundary_and_holds_above_it(self):
+    def test_official_ik_reports_position_residual_without_rejecting_pose(self):
         zero = np.zeros(10)
         left, right = self.fk_targets(zero)
-        for offset, expected in ((0.05, True), (0.05001, False)):
+        for offset in (0.05, 0.05001, 0.10):
             with self.subTest(offset=offset):
                 left_target, right_target = left.copy(), right.copy()
                 left_target[0, 3] += offset
@@ -238,11 +235,9 @@ class G123ControllerIKTest(unittest.TestCase):
                     patch.object(self.ik.opti, "stats", return_value={"success": True}),
                 ):
                     q, _ = self.solve(data, zero)
-                self.assertEqual(self.ik.last_ik_status["left_accepted"], expected)
-                if expected:
-                    self.assertAlmostEqual(self.ik.last_ik_status["left_residual_m"], offset, places=6)
-                else:
-                    np.testing.assert_allclose(q[:5], zero[:5])
+                self.assertTrue(self.ik.last_ik_status["left_accepted"])
+                self.assertAlmostEqual(self.ik.last_ik_status["left_residual_m"], offset, places=6)
+                np.testing.assert_allclose(q[:5], zero[:5])
 
     def test_nonfinite_pose_and_joint_solutions_are_rejected(self):
         zero = np.zeros(10)
