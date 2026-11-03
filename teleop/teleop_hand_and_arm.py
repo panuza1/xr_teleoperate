@@ -121,7 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--ipc', action = 'store_true', help = 'Enable IPC server to handle input; otherwise enable sshkeyboard')
     parser.add_argument('--affinity', action = 'store_true', help = 'Enable high priority and set CPU affinity mode')
     parser.add_argument('--return-arms-home-on-exit', action='store_true',
-                        help='Explicitly return arms to zero on orderly q/controller exit; never on errors or Ctrl-C.')
+                        help='Also return arms to zero on controller exit; q returns home by default.')
     # record mode and task info
     parser.add_argument('--record', action = 'store_true', help = 'Enable data recording mode')
     parser.add_argument('--task-dir', type = str, default = './utils/data/', help = 'path to save data')
@@ -705,9 +705,11 @@ if __name__ == '__main__':
         try:
             if arm_ctrl is not None:
                 return_home = (
-                    args.return_arms_home_on_exit
-                    and EXIT_REASON in ("keyboard_quit", "controller_exit")
+                    (EXIT_REASON == "keyboard_quit" or
+                     (args.return_arms_home_on_exit and EXIT_REASON == "controller_exit"))
                     and locomotion_stopped
+                    and not arm_ctrl._stop_event.is_set()
+                    and (args.sim or arm_ctrl.hold_current_position())
                 )
                 if return_home:
                     arm_ctrl.ctrl_dual_arm_go_home()

@@ -23,8 +23,8 @@ Before using a physical G1:
 - Use a stand or gantry for the first test.
 - Keep the physical e-stop ready and use a second person as a spotter.
 - Test Quest input with the no-DDS inspector before enabling walking.
-- The program does not home arms automatically on shutdown. It requests an acknowledged zero-velocity Loco command, holds the latest fresh arm joint positions briefly, then stops its arm publisher. If zero velocity cannot be acknowledged, use the physical e-stop.
-- `LocoClient.Damp()` is a locomotion mode request, not an emergency stop. `--return-arms-home-on-exit` is an explicit opt-in for an orderly `q` or controller exit only; it is skipped after Ctrl+C, errors, or an unconfirmed locomotion stop.
+- On shutdown, the program requests an acknowledged zero-velocity Loco command before handling the arms. If zero velocity cannot be acknowledged, use the physical e-stop.
+- `LocoClient.Damp()` is a locomotion mode request, not an emergency stop. Pressing `q` returns the arms home; `--return-arms-home-on-exit` also enables this for controller exit. Homing is skipped after Ctrl+C, errors, an unconfirmed locomotion stop, or stale arm state.
 
 ## Installation
 

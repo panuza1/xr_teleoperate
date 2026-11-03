@@ -5,7 +5,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import numpy as np
 
 from teleop.robot_control.test_arm_only_message_equivalence import _module_stubs
@@ -95,6 +95,50 @@ class ArmControllerShutdownTest(unittest.TestCase):
 
     def setUp(self):
         _Publisher.instances.clear()
+
+    def test_keyboard_quit_homes_only_with_confirmed_stop_and_fresh_state(self):
+        path = Path(__file__).parents[1] / "teleop_hand_and_arm.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        main_try = next(node for node in ast.walk(tree) if isinstance(node, ast.Try)
+                        and any(isinstance(handler.type, ast.Name) and handler.type.id == "KeyboardInterrupt"
+                                for handler in node.handlers))
+        on_press = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "on_press")
+        for reason, flag, loco_ok, fresh, stopped, sim, expected in (
+            ("keyboard_quit", False, True, True, False, False, True),
+            ("keyboard_quit", False, False, True, False, False, False),
+            ("keyboard_quit", False, True, False, False, False, False),
+            ("keyboard_quit", False, True, True, True, False, False),
+            ("keyboard_quit", False, True, False, False, True, True),
+            ("keyboard_interrupt", True, True, True, False, False, False),
+            ("exception", True, True, True, False, False, False),
+            ("controller_exit", False, True, True, False, False, False),
+            ("controller_exit", True, True, True, False, False, True),
+        ):
+            with self.subTest(reason=reason, flag=flag, loco_ok=loco_ok, fresh=fresh):
+                arm = Mock(control_dt=0.004)
+                arm._stop_event = threading.Event()
+                if stopped:
+                    arm._stop_event.set()
+                arm.hold_current_position.return_value = fresh
+                arm.stop.return_value = True
+                loco = Mock()
+                loco.stop_motion.return_value = loco_ok
+                loco.close.return_value = True
+                namespace = dict(
+                    STOP=False, START=False, RECORD_TOGGLE=False, EXIT_REASON=reason,
+                    args=types.SimpleNamespace(return_arms_home_on_exit=flag, sim=sim, arm="G1_29", motion=True),
+                    arm_ctrl=arm, loco_wrapper=loco, logger_mp=Mock(), time=Mock(), exit=Mock(),
+                    duet_wireless_publisher=None, ee_ctrl=None, motion_switcher=None,
+                    debug_mode_was_entered=False, _restore_g1_mode=Mock(), ipc_server=None,
+                    listen_keyboard_thread=None, img_client=None, tv_wrapper=None,
+                    remote_monitor=None, sim_state_subscriber=None, recorder=None,
+                )
+                exec(compile(ast.Module(body=[on_press], type_ignores=[]), str(path), "exec"), namespace)
+                if reason == "keyboard_quit":
+                    namespace["on_press"]("q")
+                exec(compile(ast.Module(body=main_try.finalbody, type_ignores=[]), str(path), "exec"), namespace)
+                self.assertEqual(arm.ctrl_dual_arm_go_home.called, expected)
+                arm.stop.assert_called_once()
 
     def test_publisher_stops_and_stop_is_idempotent(self):
         controller = self.module.G1_29_ArmController(simulation_mode=True)
@@ -280,7 +324,8 @@ class ArmControllerShutdownTest(unittest.TestCase):
         self.assertLess(ee_stop_line, restore_line)
         source = path.read_text(encoding="utf-8")
         self.assertIn("--return-arms-home-on-exit", source)
-        self.assertIn('EXIT_REASON in ("keyboard_quit", "controller_exit")', source)
+        self.assertIn('EXIT_REASON == "keyboard_quit"', source)
+        self.assertIn('EXIT_REASON == "controller_exit"', source)
         self.assertIn('EXIT_REASON = "keyboard_interrupt"', source)
         self.assertIn('EXIT_REASON = "exception"', source)
         self.assertIn("loco_wrapper.stop_motion()", source)
