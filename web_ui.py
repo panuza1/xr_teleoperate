@@ -52,7 +52,7 @@ UI_META = {
     "task_desc": ("Recording", "advanced", "Task description"),
     "task_steps": ("Recording", "advanced", "Task steps"),
 }
-BASELINE_ORDER = ("arm", "input_mode", "motion", "img_server_ip", "image_transport")
+BASELINE_ORDER = ("arm", "input_mode", "motion", "locomotion_input", "img_server_ip", "image_transport")
 
 
 def load_cli_schema(path: Path = TELEOP_SCRIPT) -> list[dict]:
@@ -113,8 +113,9 @@ BASELINE_VALUES = CLI_DEFAULTS | {
     "img_server_ip": "192.168.123.164",
     "image_transport": "zmq",
 }
-BASELINE_INCLUDED = list(BASELINE_ORDER)
+BASELINE_INCLUDED = [name for name in BASELINE_ORDER if name != "locomotion_input"]
 PRESETS = {
+    "g1_controller": {"label": "G1 Controller + Quest Locomotion", "values": BASELINE_VALUES | {"input_mode": "controller", "locomotion_input": "quest"}, "included": list(BASELINE_ORDER)},
     "baseline": {"label": "G1 + hand + motion + ZMQ", "values": BASELINE_VALUES, "included": BASELINE_INCLUDED},
     "inspire": {"label": "G1 + Inspire", "values": BASELINE_VALUES | {"ee": "inspire_dfx"}, "included": BASELINE_INCLUDED + ["ee"]},
     "simulation": {"label": "Simulation", "values": CLI_DEFAULTS | {"arm": "G1_29", "input_mode": "hand", "sim": True}, "included": ["arm", "input_mode", "sim"]},
@@ -241,7 +242,7 @@ def format_command(args: list[str]) -> str:
         else:
             parts.append(f"{shlex.quote(flag)} {shlex.quote(args[index + 1])}")
             index += 2
-    return "python teleop_hand_and_arm.py" + (" \\\n  " + " \\\n  ".join(parts) if parts else "")
+    return "python teleop/teleop_hand_and_arm.py" + (" \\\n  " + " \\\n  ".join(parts) if parts else "")
 
 
 class ProcessManager:
@@ -253,6 +254,7 @@ class ProcessManager:
         self._logs: list[dict] = []
         self._sequence = 0
         self._lock = threading.RLock()
+        self._operation_lock = threading.RLock()
 
     def _append_output(self, data: bytes) -> None:
         with self._lock:
@@ -297,6 +299,10 @@ class ProcessManager:
         return False
 
     def start(self, args: list[str]) -> dict:
+        with self._operation_lock:
+            return self._start(args)
+
+    def _start(self, args: list[str]) -> dict:
         with self._lock:
             self._poll_locked()
             if self._pid is not None and self._exit_code is None:
@@ -339,6 +345,16 @@ class ProcessManager:
             fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
 
     def stop(self, timeout: float = 20.0) -> dict:
+        with self._operation_lock:
+            return self._stop(timeout)
+
+    def restart(self, args: list[str]) -> dict:
+        with self._operation_lock:
+            if self._stop()["running"]:
+                raise RuntimeError("teleoperation did not stop")
+            return self._start(args)
+
+    def _stop(self, timeout: float = 20.0) -> dict:
         with self._lock:
             self._poll_locked()
             if self._pid is None or self._exit_code is not None:
@@ -592,6 +608,9 @@ class WebUIHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/start":
                 args = build_teleop_args(payload)
                 self._json({**self.manager.start(args), "args": args, "command": format_command(args)})
+            elif self.path == "/api/restart":
+                args = build_teleop_args(payload)
+                self._json({**self.manager.restart(args), "args": args, "command": format_command(args)})
             elif self.path == "/api/stop":
                 self._json(self.manager.stop())
             elif self.path == "/api/terminal/clear":

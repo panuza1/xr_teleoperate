@@ -43,7 +43,7 @@ class ConfigurationTests(unittest.TestCase):
             "--img-server-ip", "192.168.123.164",
             "--image-transport", "zmq",
         ])
-        self.assertEqual(web_ui.format_command(args), """python teleop_hand_and_arm.py \\
+        self.assertEqual(web_ui.format_command(args), """python teleop/teleop_hand_and_arm.py \\
   --arm G1_29 \\
   --input-mode hand \\
   --motion \\
@@ -118,6 +118,18 @@ class ConfigurationTests(unittest.TestCase):
         args = web_ui.build_teleop_args(edited)
         self.assertEqual(args[:2], ["--arm", "H2"])
         self.assertIn("--motion", args)
+
+    def test_g1_controller_preset_exact_command_and_editing(self):
+        preset = web_ui.PRESETS["g1_controller"]
+        self.assertEqual(preset["label"], "G1 Controller + Quest Locomotion")
+        self.assertEqual(web_ui.build_teleop_args(preset), [
+            "--arm", "G1_29", "--input-mode", "controller", "--motion",
+            "--locomotion-input", "quest", "--img-server-ip", "192.168.123.164",
+            "--image-transport", "zmq",
+        ])
+        edited = {**preset, "values": preset["values"] | {"motion": False, "img_server_ip": "127.0.0.1"}}
+        self.assertNotIn("--motion", web_ui.build_teleop_args(edited))
+        self.assertIn("127.0.0.1", web_ui.build_teleop_args(edited))
 
     def test_ui_flag_set_matches_real_cli_parser(self):
         tree = ast.parse((Path(__file__).parent / "teleop" / "teleop_hand_and_arm.py").read_text())
@@ -212,6 +224,23 @@ while True:
         self.assertFalse(status["running"])
         self.assertEqual(status["exit_code"], 0)
 
+    def test_restart_stops_old_process_before_starting_new_one(self):
+        manager = web_ui.ProcessManager(self.script("""
+import signal, time
+signal.signal(signal.SIGINT, lambda *_: exit(0))
+print('READY', flush=True)
+while True: time.sleep(.1)
+"""))
+        try:
+            first = manager.start([])["pid"]
+            self.wait_for(manager, "READY")
+            second = manager.restart([])["pid"]
+            self.assertNotEqual(first, second)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(first, 0)
+        finally:
+            manager.stop(timeout=2)
+
     def test_resize_updates_the_mock_pty_dimensions(self):
         manager = web_ui.ProcessManager(self.script("""
 import os, time
@@ -278,6 +307,44 @@ class WebSocketTerminalTests(unittest.TestCase):
             if opcode == 2:
                 output.extend(payload)
         return bytes(output)
+
+    def test_http_lifecycle_with_harmless_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "child.py"
+            script.write_text("import signal, time\nsignal.signal(signal.SIGINT, lambda *_: exit(0))\nprint('READY', flush=True)\nwhile True: time.sleep(.1)\n")
+            manager = web_ui.ProcessManager(script)
+            server = web_ui.make_server(port=0, manager=manager)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            def post(path, payload):
+                request = Request(base + path, data=json.dumps(payload).encode(),
+                                  headers={"Content-Type": "application/json", "Origin": base}, method="POST")
+                with urlopen(request) as response:
+                    return json.load(response)
+            try:
+                config = web_ui.PRESETS["g1_controller"]
+                self.assertEqual(post("/api/preview", config)["args"], web_ui.build_teleop_args(config))
+                first = post("/api/start", config)["pid"]
+                deadline = time.monotonic() + 3
+                while not manager.chunks() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertIn(b"READY", b"".join(chunk["data"] for chunk in manager.chunks()))
+                with self.assertRaises(HTTPError) as duplicate:
+                    post("/api/start", config)
+                self.assertEqual(duplicate.exception.code, 409)
+                with self.assertRaises(HTTPError):
+                    post("/api/restart", {"values": {"arm": "invalid"}, "included": ["arm"]})
+                self.assertEqual(manager.status()["pid"], first)
+                second = post("/api/restart", config)["pid"]
+                self.assertNotEqual(first, second)
+                self.assertFalse(post("/api/stop", {})["running"])
+                self.assertTrue(post("/api/terminal/clear", {})["ok"])
+            finally:
+                manager.stop(timeout=2)
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
     def test_websocket_preserves_raw_pty_output_and_forwards_keys(self):
         with tempfile.TemporaryDirectory() as directory:

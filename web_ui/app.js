@@ -4,6 +4,7 @@ let parameters = [], defaults = {}, presets = {}, values = {};
 let included = new Set(), extraArgs = "", parameterMode = "basic", schemaReady = false;
 let currentCommand = "", terminalText = "", terminalRunning = false, terminalConnected = false;
 let previewGeneration = 0, terminalSocket = null, terminalDecoder = new TextDecoder();
+let operationPending = false;
 
 const terminal = new Terminal({
   cursorBlink: true, convertEol: false, fontFamily: "'JetBrains Mono', ui-monospace, Menlo, monospace",
@@ -272,8 +273,9 @@ async function pollStatus() {
     $("statusSummary").textContent = data.running ? "active" : data.state;
     $("statusPulse").classList.toggle("on", data.running);
     $("railState").textContent = data.state;
-    $("btnStart").disabled = data.running;
-    $("btnStop").disabled = !data.running;
+    $("btnStart").disabled = operationPending || data.running;
+    $("btnStop").disabled = operationPending || !data.running;
+    $("btnRestart").disabled = operationPending || !data.running;
     setTerminalState(data);
   } catch (error) {
     $("statusSummary").textContent = "error";
@@ -286,6 +288,7 @@ async function pollStatus() {
 }
 
 function resizePty() {
+  if ($("terminalBody").hidden) return;
   fitAddon.fit();
   if (terminalRunning && terminalSocket?.readyState === WebSocket.OPEN) {
     terminalSocket.send(JSON.stringify({type: "resize", columns: terminal.cols, rows: terminal.rows}));
@@ -373,8 +376,8 @@ document.querySelectorAll(".mode-btn").forEach(button => button.addEventListener
 }));
 
 $("resetAll").addEventListener("click", () => applyConfiguration({values: defaults, included: [], extra_args: ""}));
-$("presetButtons").addEventListener("click", event => {
-  const preset = presets[event.target.dataset.preset];
+$("loadPreset").addEventListener("click", () => {
+  const preset = presets[$("presetSelect").value];
   if (preset) applyConfiguration(preset);
 });
 
@@ -401,30 +404,39 @@ $("btnCopy").addEventListener("click", async () => {
   } catch (_) { message("Clipboard access was denied.", true); }
 });
 
-$("btnStart").addEventListener("click", async () => {
-  if (values.motion === true && !window.confirm("Start teleoperation with motion control enabled?")) return;
+async function launch(restart = false) {
+  if (operationPending || (values.motion === true && !window.confirm(`${restart ? "Restart" : "Start"} teleoperation with motion control enabled?`))) return;
+  operationPending = true;
+  $("btnStart").disabled = $("btnStop").disabled = $("btnRestart").disabled = true;
   try {
-    const data = await api("/api/start", {method: "POST", body: JSON.stringify(getConfig())});
+    const data = await api(restart ? "/api/restart" : "/api/start", {method: "POST", body: JSON.stringify(getConfig())});
     clearFieldErrors();
     currentCommand = data.command;
     $("cmd").textContent = currentCommand;
     message(`Teleoperation started (PID ${data.pid}).`);
-    await pollStatus();
   } catch (error) { showFieldErrors(error.fieldErrors); message(error.message, true); }
-});
+  finally { operationPending = false; await pollStatus(); }
+}
+$("btnStart").addEventListener("click", () => launch());
+$("btnRestart").addEventListener("click", () => launch(true));
 
 $("btnStop").addEventListener("click", async () => {
+  if (operationPending) return;
+  operationPending = true;
+  $("btnStart").disabled = $("btnStop").disabled = $("btnRestart").disabled = true;
   try {
     const data = await api("/api/stop", {method: "POST", body: "{}"});
     message(data.exit_code === 0 ? "Teleoperation stopped cleanly." : `Teleoperation stopped (exit ${data.exit_code ?? "unknown"}).`, data.exit_code !== 0);
-    await pollStatus();
   } catch (error) { message(error.message, true); }
+  finally { operationPending = false; await pollStatus(); }
 });
 
 $("btnClear").addEventListener("click", async () => {
-  await api("/api/terminal/clear", {method: "POST", body: "{}"});
-  terminalText = "";
-  terminal.clear();
+  try {
+    await api("/api/terminal/clear", {method: "POST", body: "{}"});
+    terminalText = "";
+    terminal.clear();
+  } catch (error) { message(error.message, true); }
 });
 
 $("btnTerminalCopy").addEventListener("click", async () => {
@@ -433,6 +445,12 @@ $("btnTerminalCopy").addEventListener("click", async () => {
 });
 
 $("terminalSurface").addEventListener("click", () => terminal.focus());
+$("terminalCollapse").addEventListener("click", () => {
+  const hidden = $("terminalBody").hidden = !$("terminalBody").hidden;
+  $("terminalCollapse").textContent = hidden ? "expand" : "collapse";
+  $("terminalCollapse").setAttribute("aria-expanded", String(!hidden));
+  if (!hidden) resizePty();
+});
 function setTerminalHeight(delta) {
   const surface = $("terminalSurface");
   surface.style.height = `${Math.max(220, Math.min(window.innerHeight * .75, surface.offsetHeight + delta))}px`;
@@ -472,10 +490,9 @@ async function initialize() {
     defaults = schema.defaults;
     presets = schema.presets;
     for (const [name, preset] of Object.entries(presets)) {
-      const button = element("button", "chip", preset.label || name);
-      button.type = "button";
-      button.dataset.preset = name;
-      $("presetButtons").append(button);
+      const option = element("option", null, preset.label || name);
+      option.value = name;
+      $("presetSelect").append(option);
     }
     schemaReady = true;
     restoreConfiguration(schema.baseline);

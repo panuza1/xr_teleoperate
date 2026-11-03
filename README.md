@@ -300,6 +300,14 @@ conda activate tv
 python web_ui.py
 ```
 
+Select **G1 Controller + Quest Locomotion** and click **Load Preset**. Adjust
+the image server IP or other parameters as needed, then click **Start
+Teleoperation** and confirm motion control. Loading the preset does not start
+the robot. Use **Stop** to request cleanup or **Restart** to stop and launch
+with the current settings. The terminal shows live output; it can be collapsed,
+cleared, and set to auto-scroll. Commands shown in the preview are relative to
+the repository root. The launcher runs the script from the `teleop` directory.
+
 The `light | b&w | dark` selector and last configuration are stored in browser
 localStorage. The generated command is the exact argument list used by
 `start`; `stop` sends the managed teleop process through its existing cleanup

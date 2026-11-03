@@ -52,7 +52,7 @@
 
     <section class="block">
       <div class="block-label">presets · values remain editable</div>
-      <div class="preset-row" id="presetButtons"></div>
+      <div class="preset-row"><label for="presetSelect">Preset</label><select id="presetSelect"></select><button class="chip" id="loadPreset" type="button">Load Preset</button></div>
     </section>
   </main>
 
@@ -71,20 +71,21 @@
     <section class="panel command-panel">
       <div class="panel-hd"><span>generated command</span><span id="cmdHint">ready</span></div>
       <pre class="term command" id="cmd" aria-live="polite"></pre>
-      <div class="term-actions"><button class="btn primary" id="btnStart" type="button">start</button><button class="btn ghost" id="btnCopy" type="button">copy</button><button class="btn stop" id="btnStop" type="button" disabled>stop</button></div>
+      <div class="term-actions"><button class="btn primary" id="btnStart" type="button">Start Teleoperation</button><button class="btn stop" id="btnStop" type="button" disabled>Stop</button><button class="btn ghost" id="btnRestart" type="button" disabled>Restart</button><button class="btn ghost" id="btnCopy" type="button">copy</button></div>
     </section>
 
     <section class="panel terminal-panel" id="diagnostics">
       <div class="panel-hd terminal-head">
         <span>interactive terminal · PTY</span>
         <span class="terminal-tools">
+          <button type="button" id="terminalCollapse" aria-expanded="true" aria-controls="terminalBody">collapse</button>
           <button type="button" id="terminalSmaller" aria-label="Decrease terminal height" title="Decrease height">−</button>
           <button type="button" id="terminalLarger" aria-label="Increase terminal height" title="Increase height">+</button>
           <button type="button" id="terminalMaximize" aria-label="Maximize terminal" title="Maximize">max</button>
           <span id="terminalState">stopped</span> · exit <span id="exitStatus">—</span>
         </span>
       </div>
-      <div class="terminal-surface" id="terminalSurface" tabindex="0" role="textbox" aria-label="Interactive teleoperation terminal" aria-multiline="true">
+      <div id="terminalBody"><div class="terminal-surface" id="terminalSurface" tabindex="0" role="textbox" aria-label="Interactive teleoperation terminal" aria-multiline="true">
         <div id="terminalOutput"></div>
         <span class="terminal-placeholder" id="terminalPlaceholder">stopped · start a process, then click here to type</span>
         <div class="terminal-resize" id="terminalResize" aria-hidden="true"></div>
@@ -92,8 +93,8 @@
       <div class="terminal-actions">
         <label><input id="autoScroll" type="checkbox" checked> auto-scroll</label>
         <button class="chip" id="btnTerminalCopy" type="button">copy output</button>
-        <button class="chip" id="btnClear" type="button">clear</button>
-      </div>
+        <button class="chip" id="btnClear" type="button">Clear Logs</button>
+      </div></div>
     </section>
     <div class="note" id="message">Only start launches teleoperation. Status checks are read-only.</div>
   </aside>
